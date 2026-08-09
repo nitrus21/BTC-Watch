@@ -1,0 +1,19 @@
+{
+  "target": "ESP32-2432S028R",
+  "chipFamily": "ESP32",
+  "flashSize": "4MB",
+  "flashMode": "dio",
+  "flashFrequency": "40m",
+  "sourceBuild": ".pio/build/cyd",
+  "parts": [
+    { "file": "bootloader.bin", "offset": "0x1000", "offsetDecimal": 4096 },
+    { "file": "partitions.bin", "offset": "0x8000", "offsetDecimal": 32768 },
+    { "file": "boot_app0.bin", "offset": "0xE000", "offsetDecimal": 57344 },
+    { "file": "firmware.bin", "offset": "0x10000", "offsetDecimal": 65536 }
+  ],
+  "webFlasherImage": {
+    "file": "btc-watch-0.8.9-esp32-2432s028r.factory.bin",
+    "offset": "0x0000",
+    "offsetDecimal": 0
+  }
+}

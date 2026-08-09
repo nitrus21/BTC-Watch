@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#070707">
+  <meta name="description" content="Installez BTC Watch sur votre écran tactile ESP32-2432S028R directement depuis le navigateur.">
+  <title>BTC Watch — Web Flasher</title>
+  <link rel="stylesheet" href="./assets/styles.css">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <script type="module" src="./assets/app.js"></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <a class="brand" href="#accueil" aria-label="Accueil BTC Watch Web Flasher">
+      <span class="brand-mark"><img src="./assets/bitcoin_logo_orange_64.png" alt=""></span>
+      <span class="brand-copy"><strong>BTC WATCH</strong><small>WEB FLASHER</small></span>
+    </a>
+    <div class="target"><span class="status-dot"></span><span>ESP32-2432S028R</span><b>v0.8.9</b></div>
+  </header>
+
+  <main id="accueil">
+    <section class="product-intro" aria-labelledby="intro-title">
+      <div class="intro-copy">
+        <p class="eyebrow">QU’EST-CE QUE BTC WATCH ?</p>
+        <h1 id="intro-title">Votre Bitcoin en direct, sur un écran tactile.</h1>
+        <p class="lead">BTC Watch transforme l’ESP32-2432S028R en tableau de bord autonome pour suivre vos adresses publiques, le marché et l’heure depuis une interface entièrement tactile.</p>
+
+        <div class="feature-list">
+          <article class="feature-row">
+            <span class="feature-index">01</span>
+            <div><h2>Suivi multi-adresses</h2><p>Ajoutez ou importez jusqu’à 64 adresses publiques, avec leurs noms et collections Bitwatch.</p></div>
+          </article>
+          <article class="feature-row">
+            <span class="feature-index">02</span>
+            <div><h2>Cours et réseau Bitcoin</h2><p>Consultez le prix en EUR ou USD, la valeur totale et les frais recommandés du réseau.</p></div>
+          </article>
+          <article class="feature-row">
+            <span class="feature-index">03</span>
+            <div><h2>Horloge personnalisable</h2><p>Choisissez les textes, les couleurs, le fond et l’image de votre cadran depuis le navigateur.</p></div>
+          </article>
+        </div>
+
+        <p class="scope-note">Adresses publiques uniquement <i></i> EUR / USD <i></i> Configuration locale</p>
+      </div>
+
+      <div class="hero-visual" aria-label="Aperçu stylisé de BTC Watch">
+        <div class="device-shell">
+          <div class="device-screen">
+            <div class="screen-top"><span class="screen-brand"><img src="./assets/bitcoin_logo_orange_64.png" alt=""> BTC WATCH</span><span class="wifi">◔ 10:48</span></div>
+            <div class="screen-grid">
+              <div class="metric-main"><small>SOLDE TOTAL</small><strong>0.432197 BTC</strong><span>24 236,30 EUR</span></div>
+              <div class="metric-side"><img src="./assets/bitcoin_logo_orange_64.png" alt=""><small>VALEUR DÉTENUE</small><strong>24 236 €</strong></div>
+            </div>
+            <div class="chart"><span>TENDANCE 24H</span><svg viewBox="0 0 500 90" role="img" aria-label="Courbe de marché stylisée"><polyline points="0,62 38,55 76,69 115,48 153,54 192,31 230,40 269,26 307,38 346,18 384,27 423,12 462,25 500,10"/></svg></div>
+            <div class="screen-nav"><span>▣<small>TOTAL</small></span><span>≡<small>ADRESSES</small></span><span>◷<small>HEURE</small></span><span class="active">⌁<small>MARCHÉ</small></span><span>⌘<small>RÉSEAU</small></span></div>
+          </div>
+        </div>
+        <p><strong>Écran tactile 2,8 pouces</strong><span>Interface noire et orange · 320 × 240 px</span></p>
+      </div>
+    </section>
+
+    <section class="installer" aria-labelledby="install-title">
+      <div class="installer-copy">
+        <p class="eyebrow">INSTALLATION DIRECTE PAR USB</p>
+        <h2 id="install-title">Installez BTC Watch depuis votre navigateur.</h2>
+        <p>L’image complète contient le démarrage de l’ESP32, les partitions et le programme. Aucun logiciel de programmation n’est nécessaire.</p>
+        <div class="compatibility" id="compatibility" role="status" aria-live="polite"><span class="status-dot"></span><span id="compatibility-text">Vérification du navigateur…</span></div>
+      </div>
+
+      <div class="install-panel">
+        <span class="panel-kicker">PRÊT À INSTALLER</span>
+        <strong>BTC Watch 0.8.9</strong>
+        <span class="panel-target">ESP32-2432S028R · image factory</span>
+        <esp-web-install-button manifest="./manifest.json">
+          <button class="install-button" slot="activate" type="button"><span>Installer BTC Watch v0.8.9</span><b>→</b></button>
+          <p class="unsupported" slot="unsupported">Utilisez Chrome ou Microsoft Edge sur ordinateur.</p>
+          <p class="unsupported" slot="not-allowed">Ouvrez cette page en HTTPS ou sur localhost pour autoriser le port USB.</p>
+        </esp-web-install-button>
+        <p class="microcopy">Câble USB de données requis · Ne débranchez pas l’écran pendant l’installation.</p>
+      </div>
+    </section>
+
+    <section class="steps" aria-labelledby="steps-title">
+      <div class="section-heading"><p class="eyebrow">INSTALLATION EN 3 ÉTAPES</p><h2 id="steps-title">Quelques minutes suffisent.</h2></div>
+      <div class="step-grid">
+        <article><span>01</span><div class="step-icon">⌁</div><h3>Branchez l’écran</h3><p>Reliez le CYD à l’ordinateur avec un câble USB capable de transférer des données.</p></article>
+        <article><span>02</span><div class="step-icon">↓</div><h3>Lancez l’installation</h3><p>Cliquez sur le bouton orange, choisissez le port série de l’ESP32 puis confirmez.</p></article>
+        <article><span>03</span><div class="step-icon">✓</div><h3>Configurez BTC Watch</h3><p>Après le redémarrage, touchez <strong>Démarrer</strong> puis suivez l’assistant affiché à l’écran.</p></article>
+      </div>
+    </section>
+
+    <section class="details" aria-labelledby="details-title">
+      <div class="details-copy"><p class="eyebrow">IMAGE VÉRIFIÉE</p><h2 id="details-title">Une image complète, prête à flasher.</h2><p>Le fichier factory regroupe tous les éléments nécessaires et cible précisément l’écran ESP32 Yellow Display équipé de l’ILI9341 et du tactile XPT2046.</p></div>
+      <div class="offsets">
+        <div><span>Carte</span><strong>ESP32-2432S028R</strong></div>
+        <div><span>Flash</span><strong>4 Mo · DIO · 40 MHz</strong></div>
+        <div><span>Image factory</span><strong>Adresse 0x0000</strong></div>
+        <div><span>Version</span><strong>BTC Watch 0.8.9</strong></div>
+      </div>
+      <div class="hash-card"><span>EMPREINTE SHA-256</span><code id="firmware-hash">Calcul en attente…</code><button id="copy-hash" type="button">Copier l’empreinte</button></div>
+    </section>
+
+    <aside class="warning"><span>!</span><p><strong>Vérifiez le modèle avant de continuer.</strong> Cette image est réservée à l’ESP32-2432S028R. Une installation avec effacement supprime les réglages et les adresses déjà enregistrés.</p></aside>
+
+    <section class="after-install" aria-labelledby="after-title">
+      <div class="section-heading"><p class="eyebrow">APRÈS L’INSTALLATION</p><h2 id="after-title">Première connexion guidée.</h2><p>BTC Watch affiche directement les informations nécessaires pour terminer la configuration, même sans connaissances techniques.</p></div>
+      <div class="connection-card"><span class="connection-icon">⌁</span><div><small>RÉSEAU DE SECOURS</small><strong>BTC Watch</strong><p>Mot de passe : <b>bitcoin21</b></p></div><div class="connection-address"><small>DASHBOARD</small><strong>192.168.22.1</strong><span>ou btc-watch.local</span></div></div>
+      <div class="after-grid">
+        <article><span>01</span><h3>Touchez Démarrer</h3><p>Le bouton de l’écran d’accueil ouvre BTC Watch et, au premier lancement, l’aide de connexion.</p></article>
+        <article><span>02</span><h3>Rejoignez le Wi-Fi</h3><p>Depuis votre téléphone ou ordinateur, connectez-vous au réseau de secours <strong>BTC Watch</strong>.</p></article>
+        <article><span>03</span><h3>Ajoutez vos adresses</h3><p>Ouvrez le dashboard, configurez votre Wi-Fi puis importez un fichier Bitwatch ou ajoutez les adresses une à une.</p></article>
+      </div>
+      <p class="after-note"><strong>Conseil :</strong> le dashboard permet aussi de sauvegarder ou restaurer toute la configuration, les couleurs, les textes et le fond de l’horloge.</p>
+    </section>
+
+    <section class="release" aria-labelledby="release-title">
+      <div><p class="eyebrow">VERSION FOURNIE</p><h2 id="release-title">BTC Watch 0.8.9</h2><p>Firmware compilé pour l’ESP32-2432S028R, prêt pour une installation complète depuis cette page.</p></div>
+      <div class="release-card"><div><span>VERSION ACTUELLE</span><strong>0.8.9</strong></div><div><span>FORMAT</span><strong>Factory .bin</strong></div><div><span>INSTALLATION</span><strong>USB sécurisée</strong></div></div>
+    </section>
+  </main>
+
+  <footer><span>BTC Watch · Tableau de bord Bitcoin tactile</span><span id="year"></span></footer>
+</body>
+</html>
