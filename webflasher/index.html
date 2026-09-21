@@ -7,6 +7,7 @@
   <meta name="description" content="Installez BTC Watch sur votre écran tactile ESP32-2432S028R directement depuis le navigateur.">
   <title>BTC Watch — Web Flasher</title>
   <link rel="stylesheet" href="./assets/styles.css">
+  <link rel="stylesheet" href="./assets/manual-link.css">
   <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
   <script type="module" src="./assets/app.js"></script>
 </head>
@@ -19,10 +20,25 @@
       <span class="brand-mark"><img src="./assets/bitcoin_logo_orange_64.png" alt=""></span>
       <span class="brand-copy"><strong>BTC WATCH</strong><small>WEB FLASHER</small></span>
     </a>
-    <div class="target"><span class="status-dot"></span><span>ESP32-2432S028R</span><b>v0.9.9</b></div>
+    <div class="header-actions">
+      <a class="manual-link" href="./downloads/manuel-btc-watch-v0.9.9.pdf" download><span>↓</span> Manuel PDF</a>
+      <div class="target"><span class="status-dot"></span><span>ESP32-2432S028R</span><b>v0.9.9</b></div>
+    </div>
   </header>
 
   <main id="accueil">
+    <section class="manual-spotlight" aria-labelledby="manual-title">
+      <span class="manual-spotlight-icon" aria-hidden="true">PDF</span>
+      <div class="manual-spotlight-copy">
+        <p>NOUVEAU · MANUEL OFFICIEL v0.9.9</p>
+        <h2 id="manual-title">Découvrez BTC Watch pas à pas.</h2>
+        <span>20 pages illustrées avec les vrais écrans, l’administration complète et la remise à zéro usine.</span>
+      </div>
+      <a href="./downloads/manuel-btc-watch-v0.9.9.pdf" download>
+        <span>Télécharger le PDF</span><b>↓</b>
+      </a>
+    </section>
+
     <section class="product-intro" aria-labelledby="intro-title">
       <div class="intro-copy">
         <p class="eyebrow">QU’EST-CE QUE BTC WATCH ?</p>
@@ -43,6 +59,12 @@
             <div><h2>Horloge personnalisable</h2><p>Choisissez les textes, les couleurs, le fond et l’image de votre cadran depuis le navigateur.</p></div>
           </article>
         </div>
+
+        <a class="manual-download" href="./downloads/manuel-btc-watch-v0.9.9.pdf" download>
+          <span class="manual-download-icon">↓</span>
+          <span><strong>Télécharger le manuel complet</strong><small>PDF illustré · 20 pages · release v0.9.9</small></span>
+          <b>→</b>
+        </a>
 
         <p class="scope-note">Adresses publiques uniquement <i></i> EUR / USD <i></i> Configuration locale</p>
       </div>

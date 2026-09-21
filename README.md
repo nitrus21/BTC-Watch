@@ -21,6 +21,17 @@ du réseau et une horloge entièrement personnalisable.
 
 > Version actuelle : **0.9.9**
 
+## 📘 Manuel officiel illustré
+
+Le [manuel utilisateur BTC Watch v0.9.9](webflasher/downloads/manuel-btc-watch-v0.9.9.pdf)
+propose **20 pages illustrées avec les véritables écrans de l'appareil et du
+panneau d'administration**. Il détaille l'installation, la première connexion,
+chaque écran tactile, tous les réglages Web, les sauvegardes, le mode panique
+et la remise à zéro d'usine avec le bouton BOOT.
+
+Le manuel peut également être téléchargé depuis le bandeau dédié du
+[Web Flasher officiel](https://nitrus21.github.io/BTC-Watch/).
+
 ## 🧭 Vue d'ensemble
 
 BTC Watch transforme le CYD en écran autonome de consultation. La configuration
@@ -380,6 +391,11 @@ Le dashboard accepte une image PNG, JPEG, WebP ou GIF. Le navigateur :
 L'heure, les textes, l'état Wi-Fi, la ligne décorative et le bouton de retour
 restent affichés au-dessus de l'image. Le fond peut être remplacé ou supprimé.
 
+Un exemple prêt à importer est fourni dans
+[assets/clock-backgrounds/btcWatch.jpg](assets/clock-backgrounds/btcWatch.jpg).
+Le fichier source Photoshop modifiable est disponible dans
+[assets/clock-backgrounds/btcWatch.psd](assets/clock-backgrounds/btcWatch.psd).
+
 ## ♻️ Remise à zéro
 
 Appareil allumé, maintenez le bouton arrière **BOOT** pendant cinq secondes.
@@ -408,10 +424,10 @@ Les données dépendent de la disponibilité du Wi-Fi et des services externes.
 
     BTC-Watch/
     ├── src/                 Code du firmware
-    ├── assets/              Images sources du logo
+    ├── assets/              Logos et fonds d'horloge sources (JPG/PSD)
     ├── tools/               Outil de génération des bitmaps
     ├── Firmware_CYD/        Binaires pour programmation manuelle
-    ├── webflasher/          Installateur USB pour navigateur
+    ├── webflasher/          Installateur USB et manuel PDF téléchargeable
     ├── platformio.ini       Configuration PlatformIO
     ├── README.md            Documentation du projet
     └── LICENSE              Licence MIT
