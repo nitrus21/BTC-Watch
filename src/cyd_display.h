@@ -20,7 +20,8 @@ enum class TouchAction : uint8_t {
   NextPage,
   SelectEUR,
   SelectUSD,
-  StartApplication
+  StartApplication,
+  PanicClearWallets
 };
 
 class CYDDisplay {
@@ -31,6 +32,16 @@ public:
   void invalidate();
   void drawSplash();
   void drawFirstRunGuide(const String &apPassword);
+  void drawWifiSearching();
+  void drawWifiNetworkList(const String ssids[], const int32_t rssis[],
+                           const bool secured[], uint8_t count,
+                           uint8_t page);
+  void drawWifiPassword(const String &ssid, const String &password,
+                        uint8_t keyboardMode, const String &message = "");
+  void highlightWifiKeyboardTouch(int16_t x, int16_t y,
+                                  uint8_t keyboardMode);
+  void drawWifiConnecting(const String &ssid);
+  void drawWifiConnectionResult(bool success, const String &detail);
   void drawFactoryResetCountdown(uint8_t secondsRemaining);
   void drawFactoryResetComplete();
   void render(UiScreen screen, const Settings &settings,
@@ -38,6 +49,9 @@ public:
               float priceChange, int feeLow, int feeMedium, int feeHigh,
               bool wifiConnected, const String &time, bool marketLoading);
   TouchAction pollTouch();
+  bool pollTouchPoint(int16_t &x, int16_t &y);
+  static char wifiKeyboardCharacter(uint8_t mode, uint8_t row,
+                                    uint8_t column);
   void moveAddressPage(int8_t delta, uint8_t walletCount);
   void updateHeader(bool wifiConnected, const String &time);
 

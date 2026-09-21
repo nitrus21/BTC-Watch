@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <SPIFFS.h>
+#include <WiFi.h>
 
 namespace {
 bool validColor(const String &value) {
@@ -29,10 +30,19 @@ bool validTimezone(const String &timezone) {
   const int offset = timezone.substring(3).toInt();
   return offset >= -12 && offset <= 14;
 }
+
+bool validIPv4(const String &value) {
+  IPAddress address;
+  return address.fromString(value);
+}
 }
 
 Settings::Settings()
     : wifiSSID(""), wifiPASS(""), apPassword(getDefaultAPPassword()),
+      staticIPEnabled(getDefaultStaticIPEnabled()),
+      staticIP(getDefaultStaticIP()),
+      staticGateway(getDefaultStaticGateway()),
+      staticSubnet(getDefaultStaticSubnet()), staticDNS(getDefaultStaticDNS()),
       devise(getDefaultDevise()),
       timezone(getDefaultTimezone()), priceAPI(getDefaultPriceAPI()),
       clockColor(getDefaultClockColor()),
@@ -80,6 +90,7 @@ void Settings::load() {
   if (!SPIFFS.exists("/config.json")) return;
   File file = SPIFFS.open("/config.json", "r");
   if (!file) return;
+  bool networkSettingsMigrated = false;
 
   JsonDocument doc;
   if (deserializeJson(doc, file) == DeserializationError::Ok) {
@@ -88,6 +99,28 @@ void Settings::load() {
     apPassword = doc["ap_password"] | apPassword;
     if (apPassword.length() < 8 || apPassword.length() > 63)
       apPassword = getDefaultAPPassword();
+    staticIPEnabled = doc["static_ip_enabled"] | staticIPEnabled;
+    staticIP = doc["static_ip"] | staticIP;
+    staticGateway = doc["static_gateway"] | staticGateway;
+    staticSubnet = doc["static_subnet"] | staticSubnet;
+    staticDNS = doc["static_dns"] | staticDNS;
+    // Migration ciblee de l'ancienne configuration par defaut. Elle conserve
+    // l'adresse d'administration .50 tout en appliquant la passerelle et le
+    // DNS reels du reseau domestique actuel.
+    if (staticIPEnabled && staticIP == "192.168.1.50" &&
+        staticGateway == "192.168.1.1" && staticDNS == "192.168.1.1") {
+      staticGateway = getDefaultStaticGateway();
+      staticDNS = getDefaultStaticDNS();
+      networkSettingsMigrated = true;
+    }
+    if (!validIPv4(staticIP) || !validIPv4(staticGateway) ||
+        !validIPv4(staticSubnet) || !validIPv4(staticDNS)) {
+      staticIPEnabled = false;
+      staticIP = getDefaultStaticIP();
+      staticGateway = getDefaultStaticGateway();
+      staticSubnet = getDefaultStaticSubnet();
+      staticDNS = getDefaultStaticDNS();
+    }
     timezone = doc["tz"] | timezone;
     devise = doc["currency"] | devise;
     priceAPI = doc["price_api"] | priceAPI;
@@ -122,6 +155,7 @@ void Settings::load() {
     }
   }
   file.close();
+  if (networkSettingsMigrated) save();
 }
 
 void Settings::save() {
@@ -129,6 +163,11 @@ void Settings::save() {
   doc["ssid"] = wifiSSID;
   doc["pass"] = wifiPASS;
   doc["ap_password"] = apPassword;
+  doc["static_ip_enabled"] = staticIPEnabled;
+  doc["static_ip"] = staticIP;
+  doc["static_gateway"] = staticGateway;
+  doc["static_subnet"] = staticSubnet;
+  doc["static_dns"] = staticDNS;
   doc["tz"] = timezone;
   doc["currency"] = devise;
   doc["price_api"] = priceAPI;
@@ -173,6 +212,12 @@ bool Settings::restoreFromJson(const String &json, String &errorMessage) {
   restored.wifiSSID = doc["ssid"] | "";
   restored.wifiPASS = doc["pass"] | "";
   restored.apPassword = doc["ap_password"] | restored.apPassword;
+  restored.staticIPEnabled =
+      doc["static_ip_enabled"] | restored.staticIPEnabled;
+  restored.staticIP = doc["static_ip"] | restored.staticIP;
+  restored.staticGateway = doc["static_gateway"] | restored.staticGateway;
+  restored.staticSubnet = doc["static_subnet"] | restored.staticSubnet;
+  restored.staticDNS = doc["static_dns"] | restored.staticDNS;
   restored.timezone = doc["tz"] | restored.timezone;
   restored.devise = doc["currency"] | restored.devise;
   restored.priceAPI = doc["price_api"] | restored.priceAPI;
@@ -206,6 +251,12 @@ bool Settings::restoreFromJson(const String &json, String &errorMessage) {
   }
   if (restored.apPassword.length() < 8 || restored.apPassword.length() > 63) {
     errorMessage = "Mot de passe BTC Watch invalide";
+    return false;
+  }
+  if (!validIPv4(restored.staticIP) ||
+      !validIPv4(restored.staticGateway) ||
+      !validIPv4(restored.staticSubnet) || !validIPv4(restored.staticDNS)) {
+    errorMessage = "Parametres d'adresse IP invalides";
     return false;
   }
   if (!validTimezone(restored.timezone)) {

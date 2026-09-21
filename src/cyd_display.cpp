@@ -125,11 +125,270 @@ void CYDDisplay::drawFirstRunGuide(const String &apPassword) {
   tft.setTextDatum(MC_DATUM);
   tft.setTextFont(1);
   tft.setTextColor(C_MUTED, C_BG);
-  tft.drawString("Connectez un telephone ou un ordinateur", 160, 188);
+  tft.drawString("Apres reglage, gardez votre Wi-Fi habituel", 160, 181);
+  tft.setTextColor(C_ORANGE, C_BG);
+  tft.drawString("192.168.1.50  ou  btc-watch.local", 160, 193);
   drawCard(102, 203, 116, 29, C_PANEL_2, C_ORANGE_DARK);
   tft.setTextFont(2);
   tft.setTextColor(C_ORANGE, C_PANEL_2);
   tft.drawString("CONTINUER", 160, 217);
+  tft.endWrite();
+}
+
+void CYDDisplay::drawWifiSearching() {
+  welcomeScreenVisible = false;
+  firstRunGuideVisible = false;
+  tft.startWrite();
+  tft.fillScreen(C_BG);
+  drawWifiIcon(160, 72, false);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4);
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.drawString("RECHERCHE WI-FI", 160, 126);
+  tft.setTextFont(2);
+  tft.setTextColor(C_MUTED, C_BG);
+  tft.drawString("Detection des reseaux a proximite...", 160, 158);
+  tft.setTextFont(1);
+  tft.drawString("Le reseau de secours reste actif", 160, 190);
+  tft.endWrite();
+}
+
+void CYDDisplay::drawWifiNetworkList(const String ssids[],
+                                     const int32_t rssis[],
+                                     const bool secured[], uint8_t count,
+                                     uint8_t page) {
+  welcomeScreenVisible = false;
+  firstRunGuideVisible = false;
+  tft.startWrite();
+  tft.fillScreen(C_BG);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(C_ORANGE, C_BG);
+  tft.drawString("CHOISIR LE WI-FI", 12, 17);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextFont(1);
+  tft.setTextColor(C_MUTED, C_BG);
+  const uint8_t pages = max<uint8_t>(1, (count + 3) / 4);
+  tft.drawString(String(page + 1) + "/" + String(pages), 309, 17);
+  tft.drawFastHLine(8, 34, 304, C_LINE);
+
+  if (count == 0) {
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_TEXT, C_BG);
+    tft.drawString("Aucun reseau detecte", 160, 104);
+  } else {
+    const uint8_t first = page * 4;
+    for (uint8_t row = 0; row < 4; ++row) {
+      const uint8_t index = first + row;
+      if (index >= count) break;
+      const int16_t y = 40 + row * 38;
+      drawCard(8, y, 304, 33, C_PANEL, C_LINE);
+      String name = ssids[index];
+      if (name.length() > 25) name = name.substring(0, 22) + "...";
+      tft.setTextDatum(ML_DATUM);
+      tft.setTextFont(2);
+      tft.setTextColor(C_TEXT, C_PANEL);
+      tft.drawString(name, 18, y + 16);
+      tft.setTextDatum(MR_DATUM);
+      tft.setTextFont(1);
+      tft.setTextColor(secured[index] ? C_ORANGE : C_GREEN, C_PANEL);
+      tft.drawString(String(secured[index] ? "SEC " : "OUV ") +
+                         String(rssis[index]) + " dBm",
+                     301, y + 16);
+    }
+  }
+
+  drawCard(5, 198, 57, 34, C_PANEL_2, C_LINE);
+  drawCard(66, 198, 57, 34, C_PANEL_2, C_LINE);
+  drawCard(127, 198, 83, 34, C_PANEL_2, C_ORANGE_DARK);
+  drawCard(214, 198, 101, 34, C_PANEL_2, C_LINE);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(1);
+  tft.setTextColor(C_TEXT, C_PANEL_2);
+  tft.drawString("<", 33, 215);
+  tft.drawString(">", 94, 215);
+  tft.setTextColor(C_ORANGE, C_PANEL_2);
+  tft.drawString("RECHERCHER", 168, 215);
+  tft.setTextColor(C_TEXT, C_PANEL_2);
+  tft.drawString("TELEPHONE", 264, 215);
+  tft.endWrite();
+}
+
+char CYDDisplay::wifiKeyboardCharacter(uint8_t mode, uint8_t row,
+                                       uint8_t column) {
+  static const char *const rows[3][4] = {
+      {"1234567890", "qwertyuiop", "asdfghjkl@", "zxcvbnm.-_"},
+      {"1234567890", "QWERTYUIOP", "ASDFGHJKL@", "ZXCVBNM.-_"},
+      {"!@#$%^&*()", "[]{}<>?/\\|", "=-+_:;\"'&,", "~.,:;!?%#/"}};
+  if (mode > 2 || row > 3 || column > 9) return '\0';
+  return rows[mode][row][column];
+}
+
+void CYDDisplay::drawWifiPassword(const String &ssid, const String &password,
+                                  uint8_t keyboardMode,
+                                  const String &message) {
+  welcomeScreenVisible = false;
+  firstRunGuideVisible = false;
+  tft.startWrite();
+  tft.fillScreen(C_BG);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(C_ORANGE, C_BG);
+  String title = ssid;
+  if (title.length() > 24) title = title.substring(0, 21) + "...";
+  tft.drawString(title, 7, 12);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextFont(1);
+  tft.setTextColor(message.isEmpty() ? C_MUTED : C_RED, C_BG);
+  tft.drawString(message.isEmpty() ? String(password.length()) + "/63" : message,
+                 313, 12);
+
+  drawCard(5, 26, 310, 31, C_PANEL, C_LINE);
+  String visiblePassword = password;
+  if (visiblePassword.length() > 34)
+    visiblePassword = "..." + visiblePassword.substring(visiblePassword.length() - 31);
+  if (visiblePassword.isEmpty()) visiblePassword = "Mot de passe Wi-Fi";
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(password.isEmpty() ? C_MUTED : C_TEXT, C_PANEL);
+  tft.drawString(visiblePassword, 13, 41);
+
+  for (uint8_t row = 0; row < 4; ++row) {
+    const int16_t y = 63 + row * 29;
+    for (uint8_t column = 0; column < 10; ++column) {
+      const int16_t x = 3 + column * 32;
+      drawCard(x, y, 29, 26, C_PANEL_2, C_LINE);
+      String key;
+      key += wifiKeyboardCharacter(keyboardMode, row, column);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextFont(2);
+      tft.setTextColor(C_TEXT, C_PANEL_2);
+      tft.drawString(key, x + 14, y + 13);
+    }
+  }
+
+  drawCard(3, 181, 57, 24, C_PANEL_2, C_LINE);
+  drawCard(63, 181, 111, 24, C_PANEL_2, C_LINE);
+  drawCard(177, 181, 61, 24, C_PANEL_2, C_LINE);
+  drawCard(241, 181, 76, 24, C_PANEL_2, C_LINE);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(1);
+  tft.setTextColor(C_TEXT, C_PANEL_2);
+  tft.drawString(keyboardMode == 1 ? "abc" : "ABC", 31, 193);
+  tft.drawString("ESPACE", 118, 193);
+  tft.drawString("EFFACER", 207, 193);
+  tft.drawString(keyboardMode == 2 ? "abc" : "#+=", 279, 193);
+
+  drawCard(3, 210, 154, 27, C_PANEL_2, C_LINE);
+  drawCard(163, 210, 154, 27, C_ORANGE_DARK, C_ORANGE);
+  tft.setTextFont(2);
+  tft.setTextColor(C_MUTED, C_PANEL_2);
+  tft.drawString("RETOUR", 80, 223);
+  tft.setTextColor(C_TEXT, C_ORANGE_DARK);
+  tft.drawString("CONNECTER", 240, 223);
+  tft.endWrite();
+}
+
+void CYDDisplay::highlightWifiKeyboardTouch(int16_t x, int16_t y,
+                                            uint8_t keyboardMode) {
+  int16_t buttonX = -1;
+  int16_t buttonY = -1;
+  int16_t buttonW = 0;
+  int16_t buttonH = 0;
+  String label;
+  uint8_t font = 1;
+
+  if (y >= 63 && y < 179 && x >= 3 && x < 320) {
+    const uint8_t row = (y - 63) / 29;
+    const uint8_t rowOffset = (y - 63) % 29;
+    const uint8_t column = (x - 3) / 32;
+    const uint8_t columnOffset = (x - 3) % 32;
+    if (row < 4 && column < 10 && rowOffset < 26 && columnOffset < 29) {
+      buttonX = 3 + column * 32;
+      buttonY = 63 + row * 29;
+      buttonW = 29;
+      buttonH = 26;
+      label += wifiKeyboardCharacter(keyboardMode, row, column);
+      font = 2;
+    }
+  } else if (y >= 181 && y < 206) {
+    if (x >= 3 && x < 60) {
+      buttonX = 3; buttonW = 57;
+      label = keyboardMode == 1 ? "abc" : "ABC";
+    } else if (x >= 63 && x < 174) {
+      buttonX = 63; buttonW = 111; label = "ESPACE";
+    } else if (x >= 177 && x < 238) {
+      buttonX = 177; buttonW = 61; label = "EFFACER";
+    } else if (x >= 241) {
+      buttonX = 241; buttonW = 76;
+      label = keyboardMode == 2 ? "abc" : "#+=";
+    }
+    if (buttonX >= 0) {
+      buttonY = 181;
+      buttonH = 24;
+    }
+  } else if (y >= 210) {
+    if (x < 160) {
+      buttonX = 3; buttonW = 154; label = "RETOUR";
+    } else {
+      buttonX = 163; buttonW = 154; label = "CONNECTER";
+    }
+    buttonY = 210;
+    buttonH = 27;
+    font = 2;
+  }
+
+  if (buttonX < 0) return;
+  tft.startWrite();
+  drawCard(buttonX, buttonY, buttonW, buttonH, C_ORANGE, C_ORANGE);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(font);
+  tft.setTextColor(TFT_BLACK, C_ORANGE);
+  tft.drawString(label, buttonX + buttonW / 2, buttonY + buttonH / 2);
+  tft.endWrite();
+}
+
+void CYDDisplay::drawWifiConnecting(const String &ssid) {
+  welcomeScreenVisible = false;
+  firstRunGuideVisible = false;
+  tft.startWrite();
+  tft.fillScreen(C_BG);
+  drawWifiIcon(160, 67, false);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4);
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.drawString("CONNEXION", 160, 116);
+  tft.setTextFont(2);
+  tft.setTextColor(C_ORANGE, C_BG);
+  String name = ssid;
+  if (name.length() > 28) name = name.substring(0, 25) + "...";
+  tft.drawString(name, 160, 148);
+  tft.setTextColor(C_MUTED, C_BG);
+  tft.drawString("Veuillez patienter...", 160, 179);
+  tft.endWrite();
+}
+
+void CYDDisplay::drawWifiConnectionResult(bool success, const String &detail) {
+  welcomeScreenVisible = false;
+  firstRunGuideVisible = false;
+  tft.startWrite();
+  tft.fillScreen(C_BG);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4);
+  tft.setTextColor(success ? C_GREEN : C_RED, C_BG);
+  tft.drawString(success ? "WI-FI CONNECTE" : "ECHEC WI-FI", 160, 55);
+  tft.setTextFont(2);
+  tft.setTextColor(C_TEXT, C_BG);
+  tft.drawString(success ? "Panneau d'administration" : "Verifiez le mot de passe",
+                 160, 99);
+  drawCard(25, 119, 270, 42, C_PANEL, success ? C_GREEN : C_RED);
+  tft.setTextColor(success ? C_ORANGE : C_TEXT, C_PANEL);
+  tft.drawString(detail, 160, 140);
+  drawCard(82, 190, 156, 36, C_PANEL_2,
+           success ? C_ORANGE_DARK : C_LINE);
+  tft.setTextColor(success ? C_ORANGE : C_TEXT, C_PANEL_2);
+  tft.drawString(success ? "CONTINUER" : "REESSAYER", 160, 208);
   tft.endWrite();
 }
 
@@ -326,7 +585,9 @@ void CYDDisplay::drawPortfolio(const Settings &settings,
     tft.drawString("Aucune adresse", 26, 75);
     tft.setTextFont(2);
     tft.setTextColor(C_ORANGE, C_PANEL);
-    tft.drawString("Ajoutez-la sur 192.168.22.1", 26, 108);
+    String dashboardAddress = settings.staticIP;
+    if (dashboardAddress.isEmpty()) dashboardAddress = DEFAULT_STATIC_IP;
+    tft.drawString("Ajoutez-la sur " + dashboardAddress, 26, 108);
   } else if (!monitor.hasData()) {
     tft.setTextFont(4);
     tft.setTextColor(C_TEXT, C_PANEL);
@@ -744,25 +1005,31 @@ void CYDDisplay::updateHeader(bool wifiConnected, const String &time) {
   tft.endWrite();
 }
 
-TouchAction CYDDisplay::pollTouch() {
-  const bool down = touch.touched();
+bool CYDDisplay::pollTouchPoint(int16_t &x, int16_t &y) {
+  // Une seule lecture SPI par cycle. L'ancien enchainement touched()+getPoint()
+  // interrogeait deux fois le XPT2046 et retardait inutilement chaque appui.
+  const TS_Point point = touch.getPoint();
+  const bool down = point.z >= TOUCH_MIN_PRESSURE;
   if (!down) {
     touchWasDown = false;
-    return TouchAction::None;
+    return false;
   }
-  TS_Point point = touch.getPoint();
-  if (touchWasDown || point.z < TOUCH_MIN_PRESSURE ||
-      millis() - lastTouchAt < TOUCH_DEBOUNCE_MS)
-    return TouchAction::None;
+  if (touchWasDown || millis() - lastTouchAt < TOUCH_DEBOUNCE_MS)
+    return false;
   touchWasDown = true;
   lastTouchAt = millis();
 
-  int16_t x = map(point.x, TOUCH_MIN_X, TOUCH_MAX_X, 0, DISPLAY_WIDTH - 1);
-  int16_t y = map(point.y, TOUCH_MIN_Y, TOUCH_MAX_Y, 0, DISPLAY_HEIGHT - 1);
+  x = map(point.x, TOUCH_MIN_X, TOUCH_MAX_X, 0, DISPLAY_WIDTH - 1);
+  y = map(point.y, TOUCH_MIN_Y, TOUCH_MAX_Y, 0, DISPLAY_HEIGHT - 1);
   x = constrain(x, 0, DISPLAY_WIDTH - 1);
   y = constrain(y, 0, DISPLAY_HEIGHT - 1);
-  Serial.printf("[Touch] raw=%d,%d z=%d -> %d,%d\n", point.x, point.y,
-                point.z, x, y);
+  return true;
+}
+
+TouchAction CYDDisplay::pollTouch() {
+  int16_t x = 0;
+  int16_t y = 0;
+  if (!pollTouchPoint(x, y)) return TouchAction::None;
 
   if (welcomeScreenVisible) {
     if (x >= 102 && x < 218 && y >= 169 && y < 217)
@@ -775,19 +1042,24 @@ TouchAction CYDDisplay::pollTouch() {
     return TouchAction::None;
   }
   if (activeScreen == UiScreen::Clock) {
-    if (x >= 274 && y >= 199)
+    if (x >= 265 && y >= 190)
       return TouchAction::ShowPortfolio;
     return TouchAction::None;
   }
-  if (activeScreen == UiScreen::Addresses && y >= 30 && y < 69) {
-    if (x >= 236 && x < 277) return TouchAction::PreviousPage;
-    if (x >= 277 && x < 318) return TouchAction::NextPage;
+  if (activeScreen == UiScreen::Addresses && y >= 30 && y < 72) {
+    if (x >= 232 && x < 277) return TouchAction::PreviousPage;
+    if (x >= 277) return TouchAction::NextPage;
   }
-  if (activeScreen == UiScreen::Market && y >= 40 && y < 76) {
-    if (x >= 95 && x < 146) return TouchAction::SelectUSD;
-    if (x >= 146 && x < 197) return TouchAction::SelectEUR;
+  if (activeScreen == UiScreen::Market && y >= 38 && y < 82) {
+    if (x >= 92 && x < 146) return TouchAction::SelectUSD;
+    if (x >= 146 && x < 202) return TouchAction::SelectEUR;
   }
-  if (y < 194) return TouchAction::None;
+  // Geste panique discret : seule la zone du grand logo Bitcoin de l'ecran
+  // Total est reconnue. Le comptage des trois appuis est gere dans main.cpp.
+  if (activeScreen == UiScreen::Portfolio && x >= 238 && x < 310 &&
+      y >= 45 && y < 132)
+    return TouchAction::PanicClearWallets;
+  if (y < 190) return TouchAction::None;
   const uint8_t index = min<uint8_t>(4, x / 64);
   return static_cast<TouchAction>(static_cast<uint8_t>(TouchAction::ShowPortfolio) + index);
 }

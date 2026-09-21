@@ -32,6 +32,7 @@ int feeHigh = -1;
 bool wasConnected = false;
 bool walletRefreshRequested = false;
 bool marketRefreshRequested = false;
+bool timeRefreshRequested = false;
 uint8_t nextWalletToRefresh = 0;
 unsigned long lastWalletCycle = 0;
 unsigned long lastPriceUpdate = 0;
@@ -43,8 +44,10 @@ bool welcomeScreenActive = false;
 unsigned long factoryButtonPressedAt = 0;
 bool factoryResetOverlayVisible = false;
 uint8_t lastFactoryCountdown = 255;
+uint8_t panicTapCount = 0;
+unsigned long lastPanicTapAt = 0;
 
-enum class NetworkJobKind : uint8_t { None, Market, Wallet };
+enum class NetworkJobKind : uint8_t { None, Market, Wallet, TimeRecovery };
 
 struct NetworkJob {
   NetworkJobKind kind = NetworkJobKind::None;
@@ -68,6 +71,8 @@ struct NetworkResult {
   int feeHigh = -1;
   bool priceValid = false;
   bool feesValid = false;
+  char time[6] = {0};
+  bool timeValid = false;
 };
 
 SemaphoreHandle_t networkWorkerMutex = nullptr;
@@ -145,6 +150,11 @@ void networkWorkerTask(void *) {
           result.feeLow, result.feeMedium, result.feeHigh);
     } else if (job.kind == NetworkJobKind::Wallet) {
       addressMonitor.fetchAddress(String(job.address), result.wallet);
+    } else if (job.kind == NetworkJobKind::TimeRecovery) {
+      result.timeValid = network.recoverTimeFromInternet();
+      if (result.timeValid)
+        strlcpy(result.time, network.getFormattedTime().c_str(),
+                sizeof(result.time));
     }
 
     if (xSemaphoreTake(networkWorkerMutex, portMAX_DELAY) == pdTRUE) {
@@ -210,6 +220,23 @@ bool queueNextWalletRefresh() {
   return true;
 }
 
+bool queueTimeRecovery() {
+  if (!networkWorkerMutex || !networkWorkerHandle) return false;
+  if (xSemaphoreTake(networkWorkerMutex, pdMS_TO_TICKS(5)) != pdTRUE)
+    return false;
+  if (networkWorkerBusy || networkResultPending) {
+    xSemaphoreGive(networkWorkerMutex);
+    return false;
+  }
+  pendingNetworkJob = NetworkJob();
+  pendingNetworkJob.kind = NetworkJobKind::TimeRecovery;
+  networkJobPending = true;
+  networkWorkerBusy = true;
+  xSemaphoreGive(networkWorkerMutex);
+  xTaskNotifyGive(networkWorkerHandle);
+  return true;
+}
+
 void processNetworkResult() {
   if (!networkWorkerMutex) return;
   NetworkResult result;
@@ -251,12 +278,75 @@ void processNetworkResult() {
     if (currentScreen == UiScreen::Portfolio ||
         currentScreen == UiScreen::Addresses)
       render();
+  } else if (result.kind == NetworkJobKind::TimeRecovery) {
+    // Une tentative suffit pour ce cycle. En cas d'echec, lastTimeUpdate
+    // programme le prochain essai sans monopoliser la file reseau.
+    timeRefreshRequested = false;
+    lastTimeUpdate = result.timeValid
+                         ? millis()
+                         : millis() - (TIME_UPDATE_INTERVAL - 1000UL);
+    if (result.timeValid) {
+      const String updatedTime = result.time;
+      if (updatedTime != "--:--" && updatedTime != currentTime) {
+        currentTime = updatedTime;
+        if (currentScreen == UiScreen::Clock)
+          render();
+        else
+          display.updateHeader(true, currentTime);
+      }
+    }
   }
+}
+
+bool refreshDisplayedTime() {
+  if (!network.isConnected()) return false;
+  const bool valid = network.updateTime();
+  lastTimeUpdate = valid ? millis()
+                         : millis() - (TIME_UPDATE_INTERVAL - 1000UL);
+  if (!valid) return false;
+
+  const String updatedTime = network.getFormattedTime();
+  if (updatedTime == "--:--") return false;
+  if (updatedTime == currentTime) return true;
+  currentTime = updatedTime;
+  if (currentScreen == UiScreen::Clock)
+    render();
+  else
+    display.updateHeader(true, currentTime);
+  return true;
 }
 
 void handleTouch() {
   const TouchAction action = display.pollTouch();
   if (action == TouchAction::None) return;
+  if (action == TouchAction::PanicClearWallets) {
+    const unsigned long now = millis();
+    if (lastPanicTapAt == 0 || now - lastPanicTapAt > 1000UL)
+      panicTapCount = 0;
+    lastPanicTapAt = now;
+    ++panicTapCount;
+    if (panicTapCount < 3) return;
+
+    panicTapCount = 0;
+    lastPanicTapAt = 0;
+    for (uint8_t i = 0; i < MAX_WALLETS; ++i) {
+      settings.wallets[i].collection = "Manuel";
+      settings.wallets[i].label = "Wallet " + String(i + 1);
+      settings.wallets[i].address = "";
+    }
+    // L'ecriture de la configuration puis la synchronisation du moniteur
+    // effacent a la fois la liste persistante et tous les soldes/transactions
+    // conserves en RAM. Un resultat reseau deja en vol sera ignore car son
+    // adresse ne correspondra plus a l'emplacement vide.
+    settings.save();
+    addressMonitor.sync(settings);
+    walletRefreshRequested = false;
+    nextWalletToRefresh = 0;
+    lastWalletCycle = millis();
+    display.moveAddressPage(-127, 0);
+    render();
+    return;
+  }
   if (firstRunGuideActive && action == TouchAction::ShowPortfolio) {
     firstRunGuideActive = false;
     currentScreen = UiScreen::Portfolio;
@@ -330,6 +420,188 @@ bool handleFactoryResetButton() {
   return true;
 }
 
+void serviceFirstRunWizard() {
+  network.update();
+  webInterface->handleClient();
+  if (webInterface->consumeSettingsChanged()) {
+    display.setBrightness(settings.brightness);
+    addressMonitor.sync(settings);
+  }
+  delay(2);
+}
+
+void waitForWifiResultButton() {
+  while (true) {
+    serviceFirstRunWizard();
+    int16_t x = 0;
+    int16_t y = 0;
+    if (display.pollTouchPoint(x, y) && x >= 76 && x < 244 && y >= 184)
+      return;
+  }
+}
+
+bool enterWifiPassword(const String &ssid, bool secured, String &password) {
+  uint8_t keyboardMode = 0;
+  String message;
+  bool redraw = true;
+  while (true) {
+    if (redraw) {
+      display.drawWifiPassword(ssid, password, keyboardMode, message);
+      redraw = false;
+    }
+    serviceFirstRunWizard();
+    int16_t x = 0;
+    int16_t y = 0;
+    if (!display.pollTouchPoint(x, y)) continue;
+    display.highlightWifiKeyboardTouch(x, y, keyboardMode);
+    delay(90);
+
+    message = "";
+    if (y >= 63 && y < 179 && x >= 3 && x < 320) {
+      const uint8_t row = (y - 63) / 29;
+      const uint8_t rowOffset = (y - 63) % 29;
+      const uint8_t column = (x - 3) / 32;
+      const uint8_t columnOffset = (x - 3) % 32;
+      if (row < 4 && column < 10 && rowOffset < 26 && columnOffset < 29 &&
+          password.length() < 63) {
+        password +=
+            CYDDisplay::wifiKeyboardCharacter(keyboardMode, row, column);
+        redraw = true;
+      }
+      continue;
+    }
+
+    if (y >= 181 && y < 206) {
+      if (x >= 3 && x < 60) {
+        keyboardMode = keyboardMode == 0 ? 1 : 0;
+        redraw = true;
+      } else if (x >= 63 && x < 174) {
+        if (password.length() < 63) password += ' ';
+        redraw = true;
+      } else if (x >= 177 && x < 238) {
+        if (!password.isEmpty()) password.remove(password.length() - 1);
+        redraw = true;
+      } else if (x >= 241) {
+        keyboardMode = keyboardMode == 2 ? 0 : 2;
+        redraw = true;
+      }
+      continue;
+    }
+
+    if (y >= 210) {
+      if (x < 160) return false;
+      if (secured && password.length() < 8) {
+        message = "8 caracteres minimum";
+        redraw = true;
+        continue;
+      }
+      return true;
+    }
+  }
+}
+
+bool connectFromFirstRunWizard(const String &ssid, bool secured) {
+  String password;
+  while (true) {
+    if (!enterWifiPassword(ssid, secured, password)) return false;
+
+    display.drawWifiConnecting(ssid);
+    network.reconnect(ssid, password, settings.timezone, settings.apPassword,
+                      settings.staticIPEnabled, settings.staticIP,
+                      settings.staticGateway, settings.staticSubnet,
+                      settings.staticDNS);
+    const unsigned long startedAt = millis();
+    while (!network.isConnected() && millis() - startedAt < 20000UL)
+      serviceFirstRunWizard();
+
+    if (network.isConnected()) {
+      settings.wifiSSID = ssid;
+      settings.wifiPASS = password;
+      settings.save();
+      display.drawWifiConnectionResult(
+          true, "http://" + WiFi.localIP().toString());
+      waitForWifiResultButton();
+      return true;
+    }
+
+    display.drawWifiConnectionResult(false, "Connexion impossible");
+    waitForWifiResultButton();
+  }
+}
+
+bool runFirstRunWifiWizard() {
+  constexpr uint8_t MAX_SETUP_NETWORKS = 16;
+  String ssids[MAX_SETUP_NETWORKS];
+  int32_t rssis[MAX_SETUP_NETWORKS] = {};
+  bool secured[MAX_SETUP_NETWORKS] = {};
+
+  while (true) {
+    display.drawWifiSearching();
+    const int found = WiFi.scanNetworks(false, true);
+    uint8_t count = 0;
+    if (found > 0) {
+      for (int i = 0; i < found && count < MAX_SETUP_NETWORKS; ++i) {
+        const String ssid = WiFi.SSID(i);
+        if (ssid.isEmpty()) continue;
+        bool duplicate = false;
+        for (uint8_t previous = 0; previous < count; ++previous) {
+          if (ssids[previous] == ssid) {
+            duplicate = true;
+            break;
+          }
+        }
+        if (duplicate) continue;
+        ssids[count] = ssid;
+        rssis[count] = WiFi.RSSI(i);
+        secured[count] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+        ++count;
+      }
+    }
+    WiFi.scanDelete();
+
+    uint8_t page = 0;
+    bool redraw = true;
+    while (true) {
+      if (redraw) {
+        display.drawWifiNetworkList(ssids, rssis, secured, count, page);
+        redraw = false;
+      }
+      serviceFirstRunWizard();
+      if (network.isConnected() && settings.hasStoredConfiguration())
+        return true;
+
+      int16_t x = 0;
+      int16_t y = 0;
+      if (!display.pollTouchPoint(x, y)) continue;
+
+      if (y >= 40 && y < 192 && count > 0) {
+        const uint8_t row = (y - 40) / 38;
+        const uint8_t rowOffset = (y - 40) % 38;
+        const uint8_t index = page * 4 + row;
+        if (row < 4 && rowOffset < 33 && index < count &&
+            connectFromFirstRunWizard(ssids[index], secured[index]))
+          return true;
+        redraw = true;
+        continue;
+      }
+
+      if (y < 198) continue;
+      const uint8_t pages = max<uint8_t>(1, (count + 3) / 4);
+      if (x < 64) {
+        if (page > 0) --page;
+        redraw = true;
+      } else if (x < 126) {
+        if (page + 1 < pages) ++page;
+        redraw = true;
+      } else if (x < 213) {
+        break;
+      } else {
+        return false;
+      }
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(FACTORY_RESET_BUTTON_PIN, INPUT_PULLUP);
@@ -341,22 +613,37 @@ void setup() {
   welcomeScreenActive = true;
   display.drawSplash();
 
+  // Le Wi-Fi et le panneau d'administration sont disponibles immédiatement,
+  // même tant que l'écran d'accueil attend l'appui sur DEMARRER.
+  addressMonitor.sync(settings);
+  network.begin(settings.wifiSSID, settings.wifiPASS, settings.timezone,
+                settings.apPassword, settings.staticIPEnabled,
+                settings.staticIP, settings.staticGateway,
+                settings.staticSubnet, settings.staticDNS);
+  webInterface = new WebInterface(&settings, &network);
+  webInterface->begin();
+
   // L'accueil reste affiche jusqu'a l'appui sur le bouton DEMARRER.
   while (true) {
     if (handleFactoryResetButton()) {
       delay(5);
       continue;
     }
+    network.update();
+    webInterface->handleClient();
+    if (webInterface->consumeSettingsChanged()) {
+      display.setBrightness(settings.brightness);
+      addressMonitor.sync(settings);
+    }
     if (display.pollTouch() == TouchAction::StartApplication) break;
     delay(5);
   }
   welcomeScreenActive = false;
+  firstRunGuideActive = !settings.hasStoredConfiguration();
 
-  addressMonitor.sync(settings);
-  network.begin(settings.wifiSSID, settings.wifiPASS, settings.timezone,
-                settings.apPassword);
-  webInterface = new WebInterface(&settings, &network);
-  webInterface->begin();
+  if (firstRunGuideActive && runFirstRunWifiWizard())
+    firstRunGuideActive = false;
+
   networkWorkerMutex = xSemaphoreCreateMutex();
   if (networkWorkerMutex) {
     if (xTaskCreatePinnedToCore(networkWorkerTask, "btc-network", 12288,
@@ -374,15 +661,15 @@ void loop() {
     delay(5);
     return;
   }
+  handleTouch();
   network.update();
   webInterface->handleClient();
-  handleTouch();
   processNetworkResult();
 
   const bool connected = network.isConnected();
   if (connected && !wasConnected) {
-    network.updateTime();
-    currentTime = network.getFormattedTime();
+    currentTime = "--:--";
+    timeRefreshRequested = true;
     requestFullRefresh();
     render();
   } else if (!connected && wasConnected) {
@@ -392,13 +679,7 @@ void loop() {
   wasConnected = connected;
 
   if (connected && network.consumeTimezonePending()) {
-    network.updateTime();
-    const String updatedTime = network.getFormattedTime();
-    if (updatedTime != currentTime) {
-      currentTime = updatedTime;
-      render();
-    }
-    lastTimeUpdate = millis();
+    timeRefreshRequested = true;
   }
 
   if (webInterface->consumeSettingsChanged()) {
@@ -412,16 +693,7 @@ void loop() {
 
   const unsigned long now = millis();
   if (connected && now - lastTimeUpdate >= TIME_UPDATE_INTERVAL) {
-    network.updateTime();
-    const String updatedTime = network.getFormattedTime();
-    lastTimeUpdate = now;
-    if (updatedTime != currentTime) {
-      currentTime = updatedTime;
-      if (currentScreen == UiScreen::Clock)
-        render();
-      else
-        display.updateHeader(connected, currentTime);
-    }
+    timeRefreshRequested = !refreshDisplayedTime();
   }
 
   if (connected && !walletRefreshRequested &&
@@ -436,8 +708,12 @@ void loop() {
   }
 
   if (connected) {
-    // Au démarrage, afficher d'abord le premier solde avant les cours et frais.
-    if (walletRefreshRequested && marketRefreshRequested &&
+    if (timeRefreshRequested) {
+      if (refreshDisplayedTime())
+        timeRefreshRequested = false;
+      else
+        queueTimeRecovery();
+    } else if (walletRefreshRequested && marketRefreshRequested &&
         nextWalletToRefresh == 0) {
       queueNextWalletRefresh();
     } else if (marketRefreshRequested) {
@@ -447,5 +723,5 @@ void loop() {
     }
   }
 
-  delay(5);
+  delay(2);
 }

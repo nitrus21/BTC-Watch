@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 0.8.9" src="https://img.shields.io/badge/version-0.8.9-F7931A?style=for-the-badge">
+  <img alt="Version 0.9.9" src="https://img.shields.io/badge/version-0.9.9-F7931A?style=for-the-badge">
   <img alt="ESP32-2432S028R" src="https://img.shields.io/badge/ESP32-2432S028R-E7352C?style=for-the-badge&amp;logo=espressif&amp;logoColor=white">
   <img alt="PlatformIO" src="https://img.shields.io/badge/PlatformIO-compatible-FF7F00?style=for-the-badge&amp;logo=platformio&amp;logoColor=white">
   <img alt="Licence MIT" src="https://img.shields.io/badge/licence-MIT-31C48D?style=for-the-badge">
@@ -19,7 +19,7 @@ BTC Watch surveille jusqu'à 64 adresses Bitcoin publiques et affiche leur solde
 total, leur contre-valeur en euros ou en dollars, le cours du Bitcoin, les frais
 du réseau et une horloge entièrement personnalisable.
 
-> Version actuelle : **0.8.9**
+> Version actuelle : **0.9.9**
 
 ## 🧭 Vue d'ensemble
 
@@ -61,6 +61,8 @@ flowchart LR
 - dashboard accessible depuis un téléphone ou un ordinateur ;
 - import et export compatibles avec bitwatch-collections ;
 - sauvegarde et restauration de la configuration complète ;
+- mode panique tactile : trois appuis rapides sur le grand logo Bitcoin de
+  l'écran Total effacent les adresses et toutes leurs données calculées ;
 - remise à zéro d'usine avec le bouton BOOT ;
 - installateur USB utilisable depuis un navigateur compatible.
 
@@ -118,38 +120,56 @@ Le cycle normal est le suivant :
 ```mermaid
 flowchart TD
     Install["Installer le firmware"] --> Power["Allumer BTC Watch"]
-    Power --> Start["Toucher DÉMARRER"]
-    Start --> Connect["Se connecter au Wi-Fi BTC Watch"]
+    Power --> Connect["Wi-Fi BTC Watch disponible immédiatement"]
+    Power --> Start["Toucher DÉMARRER pour l'interface tactile"]
+    Start --> Scan["Rechercher les réseaux sur l'écran"]
+    Scan --> Select["Choisir le Wi-Fi domestique"]
+    Select --> Keyboard["Saisir le mot de passe au clavier tactile"]
+    Keyboard --> LocalAccess["Accès permanent : 192.168.1.50"]
     Connect --> Open["Ouvrir 192.168.22.1"]
     Open --> HomeWifi["Choisir le Wi-Fi de la maison"]
-    HomeWifi --> Addresses["Ajouter ou importer les adresses"]
+    HomeWifi --> LocalAccess
+    LocalAccess --> Addresses["Ajouter ou importer les adresses"]
     Addresses --> Ready["BTC Watch est prêt"]
     classDef start fill:#F7931A,color:#111111,stroke:#FFB347,stroke-width:2px
     classDef setup fill:#2563EB,color:#FFFFFF,stroke:#60A5FA,stroke-width:2px
     classDef ready fill:#15803D,color:#FFFFFF,stroke:#4ADE80,stroke-width:2px
     class Install,Power,Start start
-    class Connect,Open,HomeWifi,Addresses setup
+    class Connect,Open,HomeWifi,Scan,Select,Keyboard,LocalAccess,Addresses setup
     class Ready ready
 ```
 
 1. Installez le firmware sur le CYD.
-2. Allumez l'appareil et touchez **DÉMARRER**.
-3. Connectez votre téléphone ou ordinateur au réseau **BTC Watch**.
-4. Utilisez le mot de passe initial **bitcoin21**.
-5. Ouvrez [http://192.168.22.1](http://192.168.22.1).
-6. Sélectionnez votre réseau Wi-Fi, saisissez son mot de passe et enregistrez.
-7. Ajoutez ou importez vos adresses Bitcoin publiques.
+2. Allumez l'appareil : le réseau **BTC Watch** est disponible immédiatement,
+   même tant que l'écran d'accueil attend sur **DÉMARRER**.
+3. Touchez **DÉMARRER** : BTC Watch recherche les réseaux disponibles.
+4. Choisissez votre Wi-Fi domestique puis saisissez son mot de passe avec le
+   clavier tactile. Le mot de passe reste visible pendant la saisie et chaque
+   touche s'allume pour confirmer l'appui. Les touches permettent aussi de
+   passer en majuscules ou symboles.
+5. Après confirmation de la connexion, ouvrez
+   [http://192.168.1.50](http://192.168.1.50) ou
+   [http://btc-watch.local](http://btc-watch.local).
+6. Ajoutez ou importez vos adresses Bitcoin publiques.
 
-Après la connexion au réseau local, le dashboard est également disponible à
-l'adresse [http://btc-watch.local](http://btc-watch.local) lorsque mDNS est
-pris en charge par l'appareil utilisé.
+La configuration depuis un téléphone reste disponible : connectez-vous au
+réseau **BTC Watch** avec le mot de passe initial **bitcoin21**, puis ouvrez
+[http://192.168.22.1](http://192.168.22.1). Sur la liste tactile des réseaux,
+le bouton **TÉLÉPHONE** affiche également ce parcours de secours.
+
+L'adresse fixe domestique par défaut est **192.168.1.50**, avec la passerelle
+**192.168.1.254** et le DNS **192.168.1.253**. Ces paramètres peuvent être modifiés, ou le mode
+DHCP peut être réactivé, dans la section **Wi-Fi et accès** du dashboard.
+L'adresse [http://btc-watch.local](http://btc-watch.local) reste également
+disponible lorsque mDNS est pris en charge par l'appareil utilisé.
 
 Le mot de passe du réseau de secours BTC Watch peut être remplacé depuis le
-dashboard. Il doit contenir entre 8 et 63 caractères.
+dashboard. Il protège également l'accès au panneau d'administration et doit
+contenir entre 8 et 63 caractères. Sa valeur initiale est **bitcoin21**.
 
 > [!TIP]
-> Si l'adresse btc-watch.local ne répond pas pendant la première configuration,
-> utilisez directement **192.168.22.1**.
+> **192.168.22.1** reste l'adresse du réseau de secours BTC Watch. Elle permet
+> de corriger la configuration si l'adresse domestique est indisponible.
 
 ## 🌐 Installation avec le webflasher
 
@@ -179,7 +199,7 @@ flowchart LR
 
 Le manifeste utilise l'image factory :
 
-    webflasher/firmware/btc-watch-0.8.9-esp32-2432s028r.factory.bin
+    webflasher/firmware/btc-watch-0.9.9-esp32-2432s028r.factory.bin
 
 Cette image contient le bootloader, la table des partitions, les données de
 démarrage OTA et le programme principal.

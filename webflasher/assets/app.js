@@ -2,7 +2,7 @@ const compatibility = document.querySelector("#compatibility");
 const compatibilityText = document.querySelector("#compatibility-text");
 const hashElement = document.querySelector("#firmware-hash");
 const copyButton = document.querySelector("#copy-hash");
-const firmwareHash = "993B7EC8F9BB36B29F45A1BFAA269C68A1D55E10C078CFFB0CBF00829E321075";
+const firmwareHash = "862971E152C2643C8DF985306BE9EAFD1B0D80058D7101B7C874484388AD0A82";
 
 if (window.isSecureContext && "serial" in navigator) {
   compatibility.classList.add("ready");

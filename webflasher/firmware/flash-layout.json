@@ -12,7 +12,7 @@
     { "file": "firmware.bin", "offset": "0x10000", "offsetDecimal": 65536 }
   ],
   "webFlasherImage": {
-    "file": "btc-watch-0.8.9-esp32-2432s028r.factory.bin",
+    "file": "btc-watch-0.9.9-esp32-2432s028r.factory.bin",
     "offset": "0x0000",
     "offsetDecimal": 0
   }

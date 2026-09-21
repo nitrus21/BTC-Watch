@@ -1,6 +1,6 @@
 {
   "name": "BTC Watch - ESP32-2432S028R",
-  "version": "0.8.9",
+  "version": "0.9.9",
   "new_install_prompt_erase": false,
   "builds": [
     {
@@ -8,6 +8,7 @@
       "parts": [
         { "path": "bootloader.bin", "offset": "0x1000" },
         { "path": "partitions.bin", "offset": "0x8000" },
+        { "path": "boot_app0.bin", "offset": "0xE000" },
         { "path": "firmware.bin", "offset": "0x10000" }
       ]
     }

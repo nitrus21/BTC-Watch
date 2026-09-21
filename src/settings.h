@@ -15,6 +15,11 @@ public:
   String wifiSSID;
   String wifiPASS;
   String apPassword;
+  bool staticIPEnabled;
+  String staticIP;
+  String staticGateway;
+  String staticSubnet;
+  String staticDNS;
   String devise;
   String timezone;
   String priceAPI;
@@ -55,6 +60,11 @@ public:
   static bool getDefaultClockBarVisible() { return true; }
   static bool getDefaultClockOutlineVisible() { return true; }
   static String getDefaultAPPassword() { return DEFAULT_AP_PASS; }
+  static bool getDefaultStaticIPEnabled() { return true; }
+  static String getDefaultStaticIP() { return DEFAULT_STATIC_IP; }
+  static String getDefaultStaticGateway() { return DEFAULT_STATIC_GATEWAY; }
+  static String getDefaultStaticSubnet() { return DEFAULT_STATIC_SUBNET; }
+  static String getDefaultStaticDNS() { return DEFAULT_STATIC_DNS; }
 };
 
 #endif

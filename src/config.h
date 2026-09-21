@@ -40,6 +40,13 @@
 #define AP_GATEWAY 192, 168, 22, 1
 #define AP_SUBNET 255, 255, 255, 0
 
+// Adresse permanente par defaut sur le reseau domestique. Ces valeurs restent
+// modifiables depuis le tableau de bord et n'affectent pas le reseau de secours.
+#define DEFAULT_STATIC_IP "192.168.1.50"
+#define DEFAULT_STATIC_GATEWAY "192.168.1.254"
+#define DEFAULT_STATIC_SUBNET "255.255.255.0"
+#define DEFAULT_STATIC_DNS "192.168.1.253"
+
 #define TIME_UPDATE_INTERVAL 10000UL
 #define PRICE_UPDATE_INTERVAL 60000UL
 #define WALLET_UPDATE_INTERVAL 120000UL
@@ -47,6 +54,6 @@
 
 #define MAX_WALLETS 64
 #define WALLETS_PER_PAGE 4
-#define APP_VERSION "0.8.9"
+#define APP_VERSION "0.9.9"
 
 #endif

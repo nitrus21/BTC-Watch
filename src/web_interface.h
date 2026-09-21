@@ -20,13 +20,20 @@ private:
   Settings *settings;
   NetworkManager *network;
   bool settingsChanged;
+  String sessionToken;
   fs::File clockBackgroundUpload;
   size_t clockBackgroundUploadBytes;
   bool clockBackgroundUploadOK;
 
   String generateHTML();
+  String generateLoginHTML(bool invalidPassword = false);
   String htmlEscape(const String &value);
+  bool isAuthenticated();
+  void refreshSessionCookie();
+  bool requireAuthentication();
   void handleRoot();
+  void handleLogin();
+  void handleLogout();
   void handleSave();
   void handleReboot();
   void handleWifiScan();

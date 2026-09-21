@@ -6,19 +6,25 @@
 
 #include "network_manager.h"
 #include "config.h"
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <sys/time.h>
 
 NetworkManager::NetworkManager() {
-  timeClient = new NTPClient(ntpUDP, "pool.ntp.org", 0, 60000);
   connected = false;
-  ntp_initialized = false;
   current_timezone = "UTC+0";
   timezone_pending = false;
+  time_sync_started_at = 0;
+  last_http_time_attempt = 0;
 }
 
-NetworkManager::~NetworkManager() { delete timeClient; }
+NetworkManager::~NetworkManager() {}
 
 void NetworkManager::begin(const String &ssid, const String &pass,
-                           const String &timezone, const String &apPassword) {
+                           const String &timezone, const String &apPassword,
+                           bool staticIPEnabled, const String &staticIP,
+                           const String &gateway, const String &subnet,
+                           const String &dns) {
   // Configuration mDNS
   MDNS.begin(MDNS_NAME);
 
@@ -38,9 +44,9 @@ void NetworkManager::begin(const String &ssid, const String &pass,
   // Connexion au WiFi si SSID fourni
   if (!ssid.isEmpty()) {
     WiFi.setHostname(HOST_NAME);
+    configureStation(staticIPEnabled, staticIP, gateway, subnet, dns);
     WiFi.begin(ssid.c_str(), pass.c_str());
     current_timezone = timezone;  // Sauvegarder pour init NTP ultérieure
-    timeClient->setTimeOffset(parseTimezone(current_timezone));
     timezone_pending = true;
   }
 }
@@ -49,22 +55,41 @@ bool NetworkManager::isConnected() {
   return WiFi.status() == WL_CONNECTED;
 }
 
-void NetworkManager::updateTime() {
-  if (connected) {
-    timeClient->update();
-  }
+bool NetworkManager::updateTime() {
+  if (!connected) return false;
+  struct tm timeInfo;
+  return getLocalTime(&timeInfo, 10);
+}
+
+bool NetworkManager::recoverTimeFromInternet() {
+  if (!connected || updateTime()) return connected;
+
+  // Certains routeurs ou fournisseurs bloquent le NTP (UDP/123). Laisser
+  // d'abord quelques secondes aux serveurs NTP, puis utiliser ponctuellement
+  // une API HTTPS qui renvoie l'heure Unix selon la connexion Internet.
+  const unsigned long now = millis();
+  if (now - time_sync_started_at < 8000UL ||
+      (last_http_time_attempt != 0 &&
+       now - last_http_time_attempt < 60000UL))
+    return false;
+  last_http_time_attempt = now;
+  return syncTimeFromHttp();
 }
 
 String NetworkManager::getFormattedTime() {
-  if (connected) {
-    return timeClient->getFormattedTime().substring(0, 5);
-  }
-  return "--:--";
+  if (!connected) return "--:--";
+  struct tm timeInfo;
+  if (!getLocalTime(&timeInfo, 10)) return "--:--";
+  char formatted[6];
+  strftime(formatted, sizeof(formatted), "%H:%M", &timeInfo);
+  return String(formatted);
 }
 
 void NetworkManager::reconnect(const String &ssid, const String &pass,
                                const String &timezone,
-                               const String &apPassword) {
+                               const String &apPassword, bool staticIPEnabled,
+                               const String &staticIP, const String &gateway,
+                               const String &subnet, const String &dns) {
   // Maintenir l'AP et relancer le STA
   WiFi.mode(WIFI_AP_STA);
   WiFi.setSleep(false);
@@ -81,37 +106,59 @@ void NetworkManager::reconnect(const String &ssid, const String &pass,
 
   if (!ssid.isEmpty()) {
     WiFi.setHostname(HOST_NAME);
+    WiFi.disconnect(false, false);
+    configureStation(staticIPEnabled, staticIP, gateway, subnet, dns);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
     // Mise à jour du fuseau horaire
     // Conserver le fuseau pour une future ré-initialisation NTP après perte de connexion
     current_timezone = timezone;
-    timeClient->setTimeOffset(parseTimezone(current_timezone));
     timezone_pending = true;
-
-    // Application immédiate si déjà connecté (ou si la connexion est encore active)
-    if (WiFi.status() == WL_CONNECTED) {
-      if (!ntp_initialized) {
-        timeClient->begin();
-        ntp_initialized = true;
-      }
-      timeClient->forceUpdate();
-    }
+    connected = false;
   }
 }
 
 void NetworkManager::applyTimezone(const String &timezone) {
   current_timezone = timezone;
-  timeClient->setTimeOffset(parseTimezone(current_timezone));
   timezone_pending = true;
   if (WiFi.status() == WL_CONNECTED) {
-    if (!ntp_initialized) {
-      timeClient->begin();
-      ntp_initialized = true;
-    }
     connected = true;
-    timeClient->forceUpdate();
+    configureTime();
   }
+}
+
+bool NetworkManager::configureStation(bool staticIPEnabled,
+                                      const String &staticIP,
+                                      const String &gateway,
+                                      const String &subnet,
+                                      const String &dns) {
+  if (!staticIPEnabled) {
+    const IPAddress automatic(0, 0, 0, 0);
+    return WiFi.config(automatic, automatic, automatic);
+  }
+
+  IPAddress localIP;
+  IPAddress gatewayIP;
+  IPAddress subnetMask;
+  IPAddress dnsIP;
+  if (!localIP.fromString(staticIP) || !gatewayIP.fromString(gateway) ||
+      !subnetMask.fromString(subnet) || !dnsIP.fromString(dns)) {
+    Serial.println("Configuration IP fixe invalide, retour au DHCP");
+    const IPAddress automatic(0, 0, 0, 0);
+    WiFi.config(automatic, automatic, automatic);
+    return false;
+  }
+
+  // Le DNS secondaire permet aux serveurs horaires et aux API de rester
+  // joignables si le routeur local ne relaie pas correctement les requetes DNS.
+  const IPAddress fallbackDNS(1, 1, 1, 1);
+  const bool configured =
+      WiFi.config(localIP, gatewayIP, subnetMask, dnsIP, fallbackDNS);
+  if (configured)
+    Serial.println("Adresse locale fixe configuree : " + localIP.toString());
+  else
+    Serial.println("Impossible d'appliquer l'adresse IP fixe");
+  return configured;
 }
 
 void NetworkManager::update() {
@@ -121,14 +168,9 @@ void NetworkManager::update() {
   if (sta_now_connected && !connected) {
     // Première connexion STA détectée
     connected = true;
-    // Configuration NTP
-    int tzOffset = parseTimezone(current_timezone);
-    if (!ntp_initialized) {
-      timeClient->begin();
-      ntp_initialized = true;
-    }
-    timeClient->setTimeOffset(tzOffset);
-    timeClient->forceUpdate();
+    // Le service SNTP natif travaille en arriere-plan et ne bloque jamais
+    // la boucle principale ni la lecture du tactile.
+    configureTime();
     timezone_pending = true;
 
     // Démarrage mDNS
@@ -139,6 +181,44 @@ void NetworkManager::update() {
     // Connexion perdue
     connected = false;
   }
+}
+
+void NetworkManager::configureTime() {
+  // Trois fournisseurs independants : la pile SNTP choisit le premier
+  // disponible et poursuit ensuite la mise a jour en arriere-plan.
+  configTime(parseTimezone(current_timezone), 0, "time.cloudflare.com",
+             "time.google.com", "pool.ntp.org");
+  time_sync_started_at = millis();
+  last_http_time_attempt = 0;
+  Serial.println("Synchronisation horaire NTP demandee");
+}
+
+bool NetworkManager::syncTimeFromHttp() {
+  HTTPClient http;
+  http.setConnectTimeout(6000);
+  http.setTimeout(8000);
+  if (!http.begin("https://gateway.timeapi.world/ip")) return false;
+
+  const int status = http.GET();
+  if (status != HTTP_CODE_OK) {
+    Serial.println("Secours horaire HTTPS indisponible : " + String(status));
+    http.end();
+    return false;
+  }
+
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, http.getStream());
+  const int64_t unixTime = doc["unixtime"] | 0LL;
+  http.end();
+  if (error || unixTime < 1609459200LL) {
+    Serial.println("Reponse horaire HTTPS invalide");
+    return false;
+  }
+
+  timeval value = {static_cast<time_t>(unixTime), 0};
+  settimeofday(&value, nullptr);
+  Serial.println("Heure synchronisee par le secours HTTPS");
+  return true;
 }
 
 // ==================== PARSE TIMEZONE ====================

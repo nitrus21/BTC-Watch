@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <ESP.h>
 #include <SPIFFS.h>
+#include <esp_system.h>
 
 namespace {
 bool validAddress(const String &address) {
@@ -21,6 +22,11 @@ bool validHtmlColor(const String &color) {
     if (!isHexadecimalDigit(color.charAt(i))) return false;
   return true;
 }
+
+bool validIPv4(const String &value) {
+  IPAddress address;
+  return address.fromString(value);
+}
 }
 
 WebInterface::WebInterface(Settings *s, NetworkManager *n)
@@ -30,21 +36,49 @@ WebInterface::WebInterface(Settings *s, NetworkManager *n)
 WebInterface::~WebInterface() { delete server; }
 
 void WebInterface::begin() {
+  sessionToken = String(esp_random(), HEX) + String(esp_random(), HEX) +
+                 String(esp_random(), HEX);
+  const char *headerKeys[] = {"Cookie"};
+  server->collectHeaders(headerKeys, 1);
   server->on("/", [this]() { handleRoot(); });
-  server->on("/save", HTTP_POST, [this]() { handleSave(); });
-  server->on("/reboot", HTTP_POST, [this]() { handleReboot(); });
-  server->on("/wifi-scan", HTTP_GET, [this]() { handleWifiScan(); });
+  server->on("/login", HTTP_POST, [this]() { handleLogin(); });
+  server->on("/logout", HTTP_POST, [this]() { handleLogout(); });
+  server->on("/session", HTTP_GET, [this]() {
+    if (requireAuthentication())
+      server->send(200, "application/json", "{\"ok\":true}");
+  });
+  server->on("/save", HTTP_POST, [this]() {
+    if (requireAuthentication()) handleSave();
+  });
+  server->on("/reboot", HTTP_POST, [this]() {
+    if (requireAuthentication()) handleReboot();
+  });
+  server->on("/wifi-scan", HTTP_GET, [this]() {
+    if (requireAuthentication()) handleWifiScan();
+  });
   server->on("/clock-background", HTTP_GET,
-             [this]() { handleClockBackgroundGet(); });
+             [this]() {
+               if (requireAuthentication()) handleClockBackgroundGet();
+             });
   server->on("/clock-background", HTTP_POST,
-             [this]() { handleClockBackgroundUploadComplete(); },
-             [this]() { handleClockBackgroundUpload(); });
+             [this]() {
+               if (requireAuthentication()) handleClockBackgroundUploadComplete();
+             },
+             [this]() {
+               if (isAuthenticated()) handleClockBackgroundUpload();
+             });
   server->on("/clock-background/delete", HTTP_POST,
-             [this]() { handleClockBackgroundDelete(); });
+             [this]() {
+               if (requireAuthentication()) handleClockBackgroundDelete();
+             });
   server->on("/configuration", HTTP_GET,
-             [this]() { handleConfigurationExport(); });
+             [this]() {
+               if (requireAuthentication()) handleConfigurationExport();
+             });
   server->on("/configuration/import", HTTP_POST,
-             [this]() { handleConfigurationImport(); });
+             [this]() {
+               if (requireAuthentication()) handleConfigurationImport();
+             });
   server->onNotFound([this]() {
     server->sendHeader("Location", "/", true);
     server->send(302);
@@ -76,7 +110,66 @@ String WebInterface::htmlEscape(const String &value) {
   return out;
 }
 
-void WebInterface::handleRoot() { server->send(200, "text/html", generateHTML()); }
+bool WebInterface::isAuthenticated() {
+  const String expected = "BTCWATCH_AUTH=" + sessionToken;
+  return server->hasHeader("Cookie") &&
+         server->header("Cookie").indexOf(expected) >= 0;
+}
+
+void WebInterface::refreshSessionCookie() {
+  server->sendHeader("Set-Cookie", "BTCWATCH_AUTH=" + sessionToken +
+                                       "; Path=/; Max-Age=600; HttpOnly; SameSite=Strict");
+}
+
+bool WebInterface::requireAuthentication() {
+  if (isAuthenticated()) {
+    refreshSessionCookie();
+    return true;
+  }
+  server->send(401, "application/json",
+               "{\"ok\":false,\"message\":\"Authentification requise\"}");
+  return false;
+}
+
+String WebInterface::generateLoginHTML(bool invalidPassword) {
+  String page;
+  page.reserve(3500);
+  page += F(R"HTML(<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion — BTC Watch</title><style>
+:root{--btc:#f7931a;--text:#f2f2f2;--muted:#969696;--line:#303030}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:#000;color:var(--text);font-family:Inter,system-ui,sans-serif}.login{width:min(420px,100%);padding:28px;border:1px solid var(--line);border-radius:22px;background:linear-gradient(145deg,#151515,#080808);box-shadow:0 24px 70px #000}.coin{display:grid;place-items:center;width:68px;height:82px;margin:0 auto 14px}.coin img{display:block;width:54px;height:auto;filter:drop-shadow(0 0 12px #f7931a55)}.eyebrow{text-align:center;color:var(--btc);font-size:12px;font-weight:800;letter-spacing:.14em}.login h1{margin:7px 0;text-align:center;font-size:28px}.intro{margin:0 0 24px;text-align:center;color:var(--muted);line-height:1.5}label{display:block;margin-bottom:7px;color:var(--muted);font-size:13px}input{width:100%;padding:14px;border:1px solid var(--line);border-radius:11px;background:#000;color:#fff;font-size:17px;outline:none}input:focus{border-color:var(--btc);box-shadow:0 0 0 3px #f7931a22}button{width:100%;margin-top:14px;padding:14px;border:0;border-radius:11px;background:var(--btc);color:#1a1005;font-size:16px;font-weight:900;cursor:pointer}.error{margin:0 0 15px;padding:11px;border-radius:9px;background:#3a1e28;color:#ff9baa;text-align:center}.hint{margin:18px 0 0;color:var(--muted);font-size:12px;text-align:center}</style></head><body><main class="login"><div class="coin"><img alt="Bitcoin" src="data:image/png;base64,)HTML");
+  page += FPSTR(WEB_LOGO_BASE64);
+  page += F(R"HTML("></div><div class="eyebrow">PANNEAU D'ADMINISTRATION</div><h1>BTC Watch</h1><p class="intro">Connectez-vous pour gérer le Wi-Fi, les adresses et l'affichage.</p>)HTML");
+  if (invalidPassword)
+    page += F("<div class='error'>Mot de passe incorrect.</div>");
+  page += F(R"HTML(<form method="post" action="/login"><label for="password">Mot de passe d'administration</label><input id="password" name="password" type="password" minlength="8" maxlength="63" autocomplete="current-password" autofocus required><button type="submit">ENTRER DANS L'ADMINISTRATION</button></form><p class="hint">Mot de passe initial : bitcoin21</p></main></body></html>)HTML");
+  return page;
+}
+
+void WebInterface::handleRoot() {
+  if (!isAuthenticated()) {
+    server->send(200, "text/html", generateLoginHTML());
+    return;
+  }
+  refreshSessionCookie();
+  server->send(200, "text/html", generateHTML());
+}
+
+void WebInterface::handleLogin() {
+  if (!server->hasArg("password") ||
+      server->arg("password") != settings->apPassword) {
+    server->send(401, "text/html", generateLoginHTML(true));
+    return;
+  }
+  refreshSessionCookie();
+  server->sendHeader("Location", "/", true);
+  server->send(303, "text/plain", "");
+}
+
+void WebInterface::handleLogout() {
+  server->sendHeader("Set-Cookie",
+                     "BTCWATCH_AUTH=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
+  server->sendHeader("Location", "/", true);
+  server->send(303, "text/plain", "");
+}
 
 void WebInterface::handleSave() {
   WalletSetting incoming[MAX_WALLETS];
@@ -133,20 +226,63 @@ void WebInterface::handleSave() {
   const String oldPass = settings->wifiPASS;
   const String oldAPPassword = settings->apPassword;
   const String oldTimezone = settings->timezone;
+  const bool oldStaticIPEnabled = settings->staticIPEnabled;
+  const String oldStaticIP = settings->staticIP;
+  const String oldStaticGateway = settings->staticGateway;
+  const String oldStaticSubnet = settings->staticSubnet;
+  const String oldStaticDNS = settings->staticDNS;
 
-  if (server->hasArg("ap_pass") && !server->arg("ap_pass").isEmpty()) {
-    const size_t length = server->arg("ap_pass").length();
+  const String currentPassword = server->arg("current_password");
+  const String newPassword = server->arg("new_password");
+  const String confirmPassword = server->arg("confirm_password");
+  const bool passwordChangeRequested = !currentPassword.isEmpty() ||
+                                       !newPassword.isEmpty() ||
+                                       !confirmPassword.isEmpty();
+  if (passwordChangeRequested) {
+    if (currentPassword.isEmpty() || newPassword.isEmpty() ||
+        confirmPassword.isEmpty()) {
+      server->send(400, "application/json",
+                   "{\"ok\":false,\"message\":\"Remplissez les trois champs du mot de passe\"}");
+      return;
+    }
+    if (currentPassword != settings->apPassword) {
+      server->send(403, "application/json",
+                   "{\"ok\":false,\"message\":\"L'ancien mot de passe est incorrect\"}");
+      return;
+    }
+    if (newPassword != confirmPassword) {
+      server->send(400, "application/json",
+                   "{\"ok\":false,\"message\":\"Les deux nouveaux mots de passe ne correspondent pas\"}");
+      return;
+    }
+    const size_t length = newPassword.length();
     if (length < 8 || length > 63) {
       server->send(400, "application/json",
                    "{\"ok\":false,\"message\":\"Le mot de passe BTC Watch doit contenir entre 8 et 63 caracteres\"}");
       return;
     }
-    settings->apPassword = server->arg("ap_pass");
+    settings->apPassword = newPassword;
   }
 
   if (server->hasArg("ssid")) settings->wifiSSID = server->arg("ssid");
   if (server->hasArg("pass") && !server->arg("pass").isEmpty())
     settings->wifiPASS = server->arg("pass");
+  const bool newStaticIPEnabled = server->hasArg("static_ip_enabled");
+  const String newStaticIP = server->arg("static_ip");
+  const String newStaticGateway = server->arg("static_gateway");
+  const String newStaticSubnet = server->arg("static_subnet");
+  const String newStaticDNS = server->arg("static_dns");
+  if (!validIPv4(newStaticIP) || !validIPv4(newStaticGateway) ||
+      !validIPv4(newStaticSubnet) || !validIPv4(newStaticDNS)) {
+    server->send(400, "application/json",
+                 "{\"ok\":false,\"message\":\"Les parametres de l'adresse IP fixe sont invalides\"}");
+    return;
+  }
+  settings->staticIPEnabled = newStaticIPEnabled;
+  settings->staticIP = newStaticIP;
+  settings->staticGateway = newStaticGateway;
+  settings->staticSubnet = newStaticSubnet;
+  settings->staticDNS = newStaticDNS;
   if (server->hasArg("currency")) settings->devise = server->arg("currency");
   if (server->hasArg("price_api")) settings->priceAPI = server->arg("price_api");
   if (server->hasArg("clock_color") && validHtmlColor(server->arg("clock_color")))
@@ -198,14 +334,22 @@ void WebInterface::handleSave() {
   settingsChanged = true;
   const bool reconnectNeeded = oldSSID != settings->wifiSSID ||
                                oldPass != settings->wifiPASS ||
-                               oldAPPassword != settings->apPassword;
+                               oldAPPassword != settings->apPassword ||
+                               oldStaticIPEnabled != settings->staticIPEnabled ||
+                               oldStaticIP != settings->staticIP ||
+                               oldStaticGateway != settings->staticGateway ||
+                               oldStaticSubnet != settings->staticSubnet ||
+                               oldStaticDNS != settings->staticDNS;
   const bool timezoneChanged = oldTimezone != settings->timezone;
   server->send(200, "application/json",
                "{\"ok\":true,\"saved\":" + String(incomingCount) + "}");
   if (reconnectNeeded) {
     delay(250);
     network->reconnect(settings->wifiSSID, settings->wifiPASS,
-                       settings->timezone, settings->apPassword);
+                       settings->timezone, settings->apPassword,
+                       settings->staticIPEnabled, settings->staticIP,
+                       settings->staticGateway, settings->staticSubnet,
+                       settings->staticDNS);
   } else if (timezoneChanged) {
     network->applyTimezone(settings->timezone);
   }
@@ -407,14 +551,28 @@ String WebInterface::generateHTML() {
   String page;
   page.reserve(20000);
   page += F(R"HTML(<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BTC Watch</title><style>
-:root{--bg:#000;--card:#090909;--card2:#141414;--line:#303030;--text:#f0f3f8;--muted:#969696;--btc:#f7931a;--green:#45d483;--red:#ff6577}*{box-sizing:border-box}body{margin:0;background:#000;color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{width:min(820px,100%);margin:auto;padding:24px 16px 48px}.hero{text-align:center;margin-bottom:20px}.coin{display:grid;place-items:center;width:62px;height:82px;margin:auto}.coin img{display:block;width:56px;height:auto}.hero h1{margin:12px 0 4px;font-size:26px}.hero p{margin:0;color:var(--muted)}#settings{display:flex;flex-direction:column}.wifi-card{order:10}.market-card{order:20}.clock-card{order:30}.addresses-card{order:40}.backup-card{order:50}.maintenance-card{order:60}.actions{order:70}#saveMsg{order:80}.card{background:linear-gradient(145deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 34px #0005}.titlebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.title{display:flex;align-items:center;gap:9px;margin-bottom:14px;font-weight:800}.titlebar .title{margin-bottom:0}.dot{width:9px;height:9px;border-radius:50%;background:var(--btc);box-shadow:0 0 10px var(--btc)}.badge{background:#050505;border:1px solid var(--line);border-radius:999px;padding:5px 10px;color:var(--btc);font-size:12px}.tools{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:14px}.file{position:relative;overflow:hidden}.file input{position:absolute;inset:0;opacity:0;cursor:pointer}.btn{border:0;border-radius:10px;padding:11px 14px;font-weight:800;cursor:pointer}.primary{background:var(--btc);color:#171008}.secondary{background:#242424;color:var(--text)}.danger{background:#3a1e28;color:#ff9baa}.wallets{display:grid;gap:9px}.wallet{display:grid;grid-template-columns:130px 1fr 1.8fr 38px;gap:8px;align-items:end;padding:11px;border:1px solid var(--line);border-radius:12px;background:#050505}.remove{height:40px;background:#3a1e28;color:#ff9baa;border:0;border-radius:9px;font-size:18px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.subsection{grid-column:1/-1;margin-top:6px;padding-top:12px;border-top:1px solid var(--line)}.subsection:first-child{margin-top:0;padding-top:0;border-top:0}.subsection strong{display:block;color:var(--text);font-size:14px}.subsection span{display:block;margin-top:3px;color:var(--muted);font-size:12px}.checkline{display:flex;align-items:center;gap:8px;margin-top:7px;color:var(--text)}.checkline input{width:auto;accent-color:var(--btc)}.image-panel{grid-column:1/-1;display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:14px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:#050505}.image-preview{width:100%;aspect-ratio:4/3;border:1px solid var(--line);border-radius:9px;background:#000;image-rendering:auto}.image-actions{display:flex;flex-direction:column;gap:9px}.image-actions .btn{width:100%;text-align:center}.image-status{color:var(--muted);font-size:12px;line-height:1.45}label{display:block;color:var(--muted);font-size:12px;margin:0 0 5px}input,select{width:100%;border:1px solid var(--line);border-radius:9px;background:#050505;color:var(--text);padding:10px;outline:none}input:focus,select:focus{border-color:var(--btc)}.scan{width:100%;margin-top:7px}.info-box{display:flex;min-height:64px;flex-direction:column;justify-content:center;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:#050505}.info-box strong{font-size:13px}.info-box span{margin-top:3px;color:var(--muted);font-size:12px}.backup-box{padding:14px;border:1px solid var(--line);border-radius:12px;background:#050505}.backup-box .tools{margin:0 0 10px}.maintenance{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid #673421;border-radius:12px;background:#251207}.maintenance p{margin:0;color:#d9b08d;font-size:12px;line-height:1.5}.key{display:inline-block;margin:0 3px;padding:2px 7px;border:1px solid #9f5730;border-radius:6px;background:#080808;color:var(--btc);font-weight:800}.actions{display:flex;gap:10px;margin-top:18px}.actions .btn{flex:1}.msg{display:none;border-radius:10px;padding:11px;margin:12px 0 0;text-align:center;font-weight:700}.ok{display:block;background:#173525;color:var(--green)}.error{display:block;background:#3a1e28;color:#ff9baa}.hint{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:700px){.wallet{grid-template-columns:1fr 1fr}.wallet .address{grid-column:1/-1}.grid{grid-template-columns:1fr}.remove{grid-column:2;grid-row:1}.maintenance{align-items:stretch;flex-direction:column}.image-panel{grid-template-columns:1fr}}
+:root{--bg:#000;--card:#090909;--card2:#141414;--line:#303030;--text:#f0f3f8;--muted:#969696;--btc:#f7931a;--green:#45d483;--red:#ff6577}*{box-sizing:border-box}body{margin:0;background:#000;color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{width:min(820px,100%);margin:auto;padding:24px 16px 48px}.hero{text-align:center;margin-bottom:20px}.coin{display:grid;place-items:center;width:62px;height:82px;margin:auto}.coin img{display:block;width:56px;height:auto}.hero h1{margin:12px 0 4px;font-size:26px}.hero p{margin:0;color:var(--btc);font-size:13px;font-weight:800;letter-spacing:.08em}#settings{display:flex;flex-direction:column}.wifi-card{order:10}.security-card{order:15}.market-card{order:20}.clock-card{order:30}.addresses-card{order:40}.backup-card{order:50}.maintenance-card{order:60}.actions{order:70}#saveMsg{order:80}.card{background:linear-gradient(145deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 34px #0005}.titlebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.title{display:flex;align-items:center;gap:9px;margin-bottom:14px;font-weight:800}.titlebar .title{margin-bottom:0}.dot{width:9px;height:9px;border-radius:50%;background:var(--btc);box-shadow:0 0 10px var(--btc)}.badge{background:#050505;border:1px solid var(--line);border-radius:999px;padding:5px 10px;color:var(--btc);font-size:12px}.tools{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:14px}.file{position:relative;overflow:hidden}.file input{position:absolute;inset:0;opacity:0;cursor:pointer}.btn{border:0;border-radius:10px;padding:11px 14px;font-weight:800;cursor:pointer}.primary{background:var(--btc);color:#171008}.secondary{background:#242424;color:var(--text)}.danger{background:#3a1e28;color:#ff9baa}.wallets{display:grid;gap:9px}.wallet{display:grid;grid-template-columns:130px 1fr 1.8fr 38px;gap:8px;align-items:end;padding:11px;border:1px solid var(--line);border-radius:12px;background:#050505}.remove{height:40px;background:#3a1e28;color:#ff9baa;border:0;border-radius:9px;font-size:18px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.subsection{grid-column:1/-1;margin-top:6px;padding-top:12px;border-top:1px solid var(--line)}.subsection:first-child{margin-top:0;padding-top:0;border-top:0}.subsection strong{display:block;color:var(--text);font-size:14px}.subsection span{display:block;margin-top:3px;color:var(--muted);font-size:12px}.checkline{display:flex;align-items:center;gap:8px;margin-top:7px;color:var(--text)}.checkline input{width:auto;accent-color:var(--btc)}.image-panel{grid-column:1/-1;display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:14px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:#050505}.image-preview{width:100%;aspect-ratio:4/3;border:1px solid var(--line);border-radius:9px;background:#000;image-rendering:auto}.image-actions{display:flex;flex-direction:column;gap:9px}.image-actions .btn{width:100%;text-align:center}.image-status{color:var(--muted);font-size:12px;line-height:1.45}label{display:block;color:var(--muted);font-size:12px;margin:0 0 5px}input,select{width:100%;border:1px solid var(--line);border-radius:9px;background:#050505;color:var(--text);padding:10px;outline:none}input:focus,select:focus{border-color:var(--btc)}.scan{width:100%;margin-top:7px}.info-box{display:flex;min-height:64px;flex-direction:column;justify-content:center;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:#050505}.info-box strong{font-size:13px}.info-box span{margin-top:3px;color:var(--muted);font-size:12px}.backup-box{padding:14px;border:1px solid var(--line);border-radius:12px;background:#050505}.backup-box .tools{margin:0 0 10px}.maintenance{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid #673421;border-radius:12px;background:#251207}.maintenance p{margin:0;color:#d9b08d;font-size:12px;line-height:1.5}.key{display:inline-block;margin:0 3px;padding:2px 7px;border:1px solid #9f5730;border-radius:6px;background:#080808;color:var(--btc);font-weight:800}.actions{display:flex;gap:10px;margin-top:18px}.actions .btn{flex:1}.msg{display:none;border-radius:10px;padding:11px;margin:12px 0 0;text-align:center;font-weight:700}.ok{display:block;background:#173525;color:var(--green)}.error{display:block;background:#3a1e28;color:#ff9baa}.hint{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:700px){.wallet{grid-template-columns:1fr 1fr}.wallet .address{grid-column:1/-1}.grid{grid-template-columns:1fr}.remove{grid-column:2;grid-row:1}.maintenance{align-items:stretch;flex-direction:column}.image-panel{grid-template-columns:1fr}}
 </style></head><body><main class="wrap"><header class="hero"><div class="coin"><img alt="Bitcoin" src="data:image/png;base64,)HTML");
   page += FPSTR(WEB_LOGO_BASE64);
-  page += F(R"HTML("></div><h1>BTC Watch</h1><p>Import JSON et ajout manuel d'adresses publiques</p></header><form id="settings"><section class="card addresses-card"><div class="titlebar"><div class="title"><span class="dot"></span>Adresses Bitcoin</div><span class="badge"><b id="count">0</b> / )HTML");
+  page += F(R"HTML("></div><h1>BTC Watch</h1><p>VERSION )HTML");
+  page += APP_VERSION;
+  page += F(R"HTML(</p></header><form id="settings"><section class="card addresses-card"><div class="titlebar"><div class="title"><span class="dot"></span>Adresses Bitcoin</div><span class="badge"><b id="count">0</b> / )HTML");
   page += String(MAX_WALLETS);
   page += F(R"HTML(</span></div><div class="tools"><label class="btn primary file">Importer un fichier d'adresses<input id="file" type="file" accept=".json,application/json"></label><button class="btn secondary" id="exportAddresses" type="button">Exporter toutes les adresses</button><button class="btn secondary" id="add" type="button">+ Ajouter une adresse</button><button class="btn danger" id="clear" type="button">Vider la liste</button></div><div id="importMsg" class="msg"></div><div id="wallets" class="wallets"></div><p class="hint">L'import conserve les adresses déjà présentes, ignore les doublons et ajoute le nom de leur collection. L'export crée un fichier JSON compatible avec le format bitwatch-collections. Seules les adresses publiques sont acceptées. Ne saisissez jamais une clé privée ou une phrase de récupération.</p></section><section class="card wifi-card"><div class="title"><span class="dot"></span>Wi-Fi et accès</div><div class="grid"><div><label>Réseau Wi-Fi</label><input id="ssid" name="ssid" value=)HTML");
   page += "'" + htmlEscape(settings->wifiSSID) + "'";
-  page += F(R"HTML(><select id="wifiList" class="scan" style="display:none"><option value="">Choisir un réseau détecté</option></select><button id="scan" class="btn secondary scan" type="button">Rechercher les réseaux Wi-Fi</button></div><div><label>Mot de passe du Wi-Fi sélectionné</label><input type="password" name="pass" placeholder="Laisser vide pour conserver"></div><div><label>Nouveau mot de passe du réseau BTC Watch</label><input type="password" name="ap_pass" minlength="8" maxlength="63" placeholder="Laisser vide pour conserver"></div><div class="info-box"><strong>Réseau de secours BTC Watch</strong><span>Accès direct : 192.168.22.1</span><span>Depuis le même réseau : http://btc-watch.local</span></div></div></section><section class="card market-card"><div class="title"><span class="dot"></span>Cours et données Bitcoin</div><div class="grid"><div><label>Source du cours</label><select name="price_api"><option value="COINGECKO")HTML");
+  page += F(R"HTML(><select id="wifiList" class="scan" style="display:none"><option value="">Choisir un réseau détecté</option></select><button id="scan" class="btn secondary scan" type="button">Rechercher les réseaux Wi-Fi</button></div><div><label>Mot de passe du Wi-Fi sélectionné</label><input type="password" name="pass" placeholder="Laisser vide pour conserver"></div><div class="subsection"><strong>Accès permanent sur le réseau domestique</strong><span>L'adresse fixe permet de retrouver le panneau d'administration sans rejoindre le réseau de secours.</span><label class="checkline"><input id="staticIpEnabled" type="checkbox" name="static_ip_enabled" value="1")HTML");
+  page += checked(settings->staticIPEnabled);
+  page += F(R"HTML(>Utiliser une adresse IP fixe</label></div><div><label>Adresse de BTC Watch</label><input class="static-ip-field" type="text" name="static_ip" inputmode="decimal" value=)HTML");
+  page += "'" + htmlEscape(settings->staticIP) + "'";
+  page += F(R"HTML(></div><div><label>Passerelle / adresse de la box</label><input class="static-ip-field" type="text" name="static_gateway" inputmode="decimal" value=)HTML");
+  page += "'" + htmlEscape(settings->staticGateway) + "'";
+  page += F(R"HTML(></div><div><label>Masque de sous-réseau</label><input class="static-ip-field" type="text" name="static_subnet" inputmode="decimal" value=)HTML");
+  page += "'" + htmlEscape(settings->staticSubnet) + "'";
+  page += F(R"HTML(></div><div><label>Serveur DNS</label><input class="static-ip-field" type="text" name="static_dns" inputmode="decimal" value=)HTML");
+  page += "'" + htmlEscape(settings->staticDNS) + "'";
+  page += F(R"HTML(></div><div class="info-box"><strong>Accès au panneau d'administration</strong><span>Réseau domestique : http://)HTML");
+  page += htmlEscape(settings->staticIP);
+  page += F(R"HTML( ou http://btc-watch.local</span><span>Réseau de secours BTC Watch : http://192.168.22.1</span></div></div></section><section class="card security-card"><div class="title"><span class="dot"></span>Sécurité et mot de passe</div><div class="grid"><div><label>Ancien mot de passe</label><input type="password" name="current_password" minlength="8" maxlength="63" autocomplete="current-password" placeholder="Mot de passe actuel"></div><div><label>Nouveau mot de passe</label><input type="password" name="new_password" minlength="8" maxlength="63" autocomplete="new-password" placeholder="8 à 63 caractères"></div><div><label>Confirmer le nouveau mot de passe</label><input type="password" name="confirm_password" minlength="8" maxlength="63" autocomplete="new-password" placeholder="Saisissez-le une seconde fois"></div><div class="info-box"><strong>Protection BTC Watch</strong><span>Ce mot de passe protège le Wi-Fi de secours et le panneau d'administration. Les deux nouveaux mots de passe doivent être identiques.</span></div></div></section><section class="card market-card"><div class="title"><span class="dot"></span>Cours et données Bitcoin</div><div class="grid"><div><label>Source du cours</label><select name="price_api"><option value="COINGECKO")HTML");
   page += selected(settings->priceAPI, "COINGECKO");
   page += F(">CoinGecko</option><option value='BINANCE'");
   page += selected(settings->priceAPI, "BINANCE");
@@ -472,6 +630,7 @@ const APP_VERSION=")HTML");
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const key=a=>/^bc1/i.test(a)?a.toLowerCase():a;const valid=a=>/^(bc1|BC1|1|3)[A-Za-z0-9]{13,89}$/.test(a);
 function message(el,text,ok=true){el.className='msg '+(ok?'ok':'error');el.textContent=text;el.style.display='block'}
+setInterval(()=>fetch('/session',{cache:'no-store'}).catch(()=>{}),60000);
 function downloadJSON(name,data){const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
 function bytesToBase64(bytes){let binary='';for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+32768,bytes.length)));return btoa(binary)}
 function base64ToBytes(value){const binary=atob(value),bytes=new Uint8Array(binary.length);for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);return bytes}
@@ -482,6 +641,7 @@ document.querySelector('#clear').onclick=()=>{if(confirm('Supprimer toutes les a
 document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const data=JSON.parse(await f.text());if(!data.collections||typeof data.collections!=='object')throw Error('Le champ collections est absent.');let added=0,dupes=0,invalid=0,full=0;const known=new Set(wallets.filter(w=>w.address).map(w=>key(w.address.trim())));for(const [collection,value] of Object.entries(data.collections)){for(const item of (value.addresses||[])){const address=String(item.address||'').trim();if(!valid(address)){invalid++;continue}const k=key(address);if(known.has(k)){dupes++;continue}if(wallets.length>=MAX){full++;continue}wallets.push({collection:String(collection).slice(0,18),label:String(item.name||('Adresse '+(wallets.length+1))).slice(0,18),address});known.add(k);added++}}render();message(im,`${added} adresse(s) importee(s), ${dupes} doublon(s), ${invalid} invalide(s)${full?', '+full+' hors limite':''}.`,invalid===0&&full===0)}catch(err){message(im,'Import impossible : '+err.message,false)}e.target.value=''};
 document.querySelector('#exportAddresses').onclick=()=>{const collections={};let exported=0;for(const wallet of wallets){const address=String(wallet.address||'').trim();if(!address)continue;if(!valid(address))return message(im,'Export impossible, adresse invalide : '+address,false);const collection=String(wallet.collection||'Manuel').trim()||'Manuel',name=String(wallet.label||'Adresse').trim()||'Adresse';if(!collections[collection])collections[collection]={addresses:[],extendedKeys:[],descriptors:[]};collections[collection].addresses.push({address,name,expect:{chain_in:0,chain_out:0,mempool_in:0,mempool_out:0},alerted:{chain_in:false,chain_out:false,mempool_in:false,mempool_out:false},trackWebsocket:false,monitor:{chain_in:'auto-accept',chain_out:'alert',mempool_in:'auto-accept',mempool_out:'alert'},queued:false,actual:{chain_in:0,chain_out:0,mempool_in:0,mempool_out:0},error:false,errorMessage:null});exported++}if(!exported)return message(im,'Aucune adresse à exporter.',false);const date=new Date().toISOString().slice(0,10);downloadJSON('btc-watch-adresses-'+date+'.json',{collections});message(im,exported+' adresse(s) exportée(s) au format Bitwatch.')};
 const scan=document.querySelector('#scan'),wifiList=document.querySelector('#wifiList'),ssid=document.querySelector('#ssid');let wifiScanning=false;async function scanWifi(){if(!wifiScanning){wifiScanning=true;scan.disabled=true;scan.textContent='Recherche en cours...'}try{const r=await fetch('/wifi-scan');if(r.status===202){setTimeout(scanWifi,350);return}if(!r.ok)throw Error('Recherche impossible');const networks=await r.json();wifiList.innerHTML='<option value="">Choisir un réseau détecté</option>'+networks.map(n=>`<option value="${esc(n.ssid)}">${esc(n.ssid)} (${n.rssi} dBm)${n.secure?' - sécurisé':''}</option>`).join('');wifiList.style.display='block';scan.textContent=networks.length+' réseau(x) détecté(s)'}catch(e){scan.textContent='Relancer la recherche'}wifiScanning=false;scan.disabled=false}scan.onclick=()=>{if(!wifiScanning)scanWifi()};wifiList.onchange=()=>{if(wifiList.value)ssid.value=wifiList.value};setTimeout(scanWifi,600);
+const staticIpEnabled=document.querySelector('#staticIpEnabled'),staticIpFields=[...document.querySelectorAll('.static-ip-field')];function updateStaticIpFields(){for(const field of staticIpFields){field.readOnly=!staticIpEnabled.checked;field.style.opacity=staticIpEnabled.checked?'1':'.55'}}staticIpEnabled.onchange=updateStaticIpFields;updateStaticIpFields();
 const bgCanvas=document.querySelector('#clockBgPreview'),bgCtx=bgCanvas.getContext('2d',{willReadFrequently:true}),bgFile=document.querySelector('#clockBgFile'),bgDelete=document.querySelector('#clockBgDelete'),bgStatus=document.querySelector('#clockBgStatus'),bgMsg=document.querySelector('#clockBgMsg');
 function emptyClockBackground(){bgCtx.fillStyle='#000';bgCtx.fillRect(0,0,320,240);bgCtx.fillStyle='#777';bgCtx.font='14px system-ui';bgCtx.textAlign='center';bgCtx.fillText('AUCUNE IMAGE',160,120)}
 function showRGB565(bytes){if(bytes.length!==153600)throw Error('Format RGB565 incorrect');const image=bgCtx.createImageData(320,240),p=image.data;for(let i=0,j=0;i<bytes.length;i+=2,j+=4){const v=bytes[i]|(bytes[i+1]<<8);p[j]=Math.round(((v>>11)&31)*255/31);p[j+1]=Math.round(((v>>5)&63)*255/63);p[j+2]=Math.round((v&31)*255/31);p[j+3]=255}bgCtx.putImageData(image,0,0)}
@@ -490,10 +650,10 @@ function canvasToRGB565(){const rgba=bgCtx.getImageData(0,0,320,240).data,out=ne
 bgFile.onchange=async e=>{const file=e.target.files[0];if(!file)return;bgMsg.style.display='none';try{const image=await createImageBitmap(file);const scale=Math.max(320/image.width,240/image.height),w=image.width*scale,h=image.height*scale;bgCtx.fillStyle='#000';bgCtx.fillRect(0,0,320,240);bgCtx.drawImage(image,(320-w)/2,(240-h)/2,w,h);image.close?.();const converted=canvasToRGB565(),body=new FormData();body.append('background',new Blob([converted],{type:'application/octet-stream'}),'clock_bg.rgb565');bgFile.disabled=true;bgDelete.disabled=true;bgStatus.textContent='Conversion et envoi en cours...';const r=await fetch('/clock-background',{method:'POST',body});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Envoi impossible');hasClockBackground=true;bgDelete.disabled=false;bgStatus.textContent='Image convertie en RGB565 320 × 240 et enregistrée.';message(bgMsg,'Nouveau fond appliqué sur le cadran Heure.')}catch(err){message(bgMsg,'Image impossible : '+err.message,false);await loadClockBackground()}finally{bgFile.disabled=false;e.target.value=''}};
 bgDelete.onclick=async()=>{if(!confirm("Supprimer l'image de fond personnalisée ?"))return;bgDelete.disabled=true;try{const r=await fetch('/clock-background/delete',{method:'POST'});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Suppression impossible');hasClockBackground=false;emptyClockBackground();bgStatus.textContent='Aucune image enregistrée. La couleur de fond est utilisée.';message(bgMsg,'Image de fond supprimée.')}catch(err){message(bgMsg,err.message,false);bgDelete.disabled=false}};loadClockBackground();
 const f=document.querySelector('#settings'),b=document.querySelector('#brightness'),bv=document.querySelector('#bv'),backupExport=document.querySelector('#backupExport'),backupFile=document.querySelector('#backupFile'),backupMsg=document.querySelector('#backupMsg');
-function mergeVisibleConfiguration(config){const form=new FormData(f);config.ssid=String(form.get('ssid')||'');if(form.get('pass'))config.pass=String(form.get('pass'));if(form.get('ap_pass'))config.ap_password=String(form.get('ap_pass'));config.tz=String(form.get('tz')||config.tz);config.price_api=String(form.get('price_api')||config.price_api);config.clock_color=String(form.get('clock_color')||config.clock_color);config.clock_background=String(form.get('clock_background')||config.clock_background);config.clock_title=String(form.get('clock_title')??config.clock_title);config.clock_subtitle=String(form.get('clock_subtitle')??config.clock_subtitle);config.clock_title_color=String(form.get('clock_title_color')||config.clock_title_color);config.clock_subtitle_color=String(form.get('clock_subtitle_color')||config.clock_subtitle_color);config.clock_bar_color=String(form.get('clock_bar_color')||config.clock_bar_color);config.clock_button_color=String(form.get('clock_button_color')||config.clock_button_color);config.clock_bar_same_as_time=form.has('clock_bar_same');config.clock_button_same_as_time=form.has('clock_button_same');config.clock_bar_visible=form.has('clock_bar_visible');config.clock_outline_visible=form.has('clock_outline_visible');config.brightness=Number(form.get('brightness')||config.brightness);config.wallets=wallets.filter(w=>String(w.address||'').trim()).map(w=>({collection:String(w.collection||'Manuel').trim().slice(0,18)||'Manuel',label:String(w.label||'Adresse').trim().slice(0,18)||'Adresse',address:String(w.address).trim()}));return config}
+function mergeVisibleConfiguration(config){const form=new FormData(f);config.ssid=String(form.get('ssid')||'');if(form.get('pass'))config.pass=String(form.get('pass'));if(form.get('new_password'))config.ap_password=String(form.get('new_password'));config.static_ip_enabled=form.has('static_ip_enabled');config.static_ip=String(form.get('static_ip')||config.static_ip);config.static_gateway=String(form.get('static_gateway')||config.static_gateway);config.static_subnet=String(form.get('static_subnet')||config.static_subnet);config.static_dns=String(form.get('static_dns')||config.static_dns);config.tz=String(form.get('tz')||config.tz);config.price_api=String(form.get('price_api')||config.price_api);config.clock_color=String(form.get('clock_color')||config.clock_color);config.clock_background=String(form.get('clock_background')||config.clock_background);config.clock_title=String(form.get('clock_title')??config.clock_title);config.clock_subtitle=String(form.get('clock_subtitle')??config.clock_subtitle);config.clock_title_color=String(form.get('clock_title_color')||config.clock_title_color);config.clock_subtitle_color=String(form.get('clock_subtitle_color')||config.clock_subtitle_color);config.clock_bar_color=String(form.get('clock_bar_color')||config.clock_bar_color);config.clock_button_color=String(form.get('clock_button_color')||config.clock_button_color);config.clock_bar_same_as_time=form.has('clock_bar_same');config.clock_button_same_as_time=form.has('clock_button_same');config.clock_bar_visible=form.has('clock_bar_visible');config.clock_outline_visible=form.has('clock_outline_visible');config.brightness=Number(form.get('brightness')||config.brightness);config.wallets=wallets.filter(w=>String(w.address||'').trim()).map(w=>({collection:String(w.collection||'Manuel').trim().slice(0,18)||'Manuel',label:String(w.label||'Adresse').trim().slice(0,18)||'Adresse',address:String(w.address).trim()}));return config}
 backupExport.onclick=async()=>{backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const configResponse=await fetch('/configuration?ts='+Date.now(),{cache:'no-store'});if(!configResponse.ok)throw Error('Configuration indisponible');const configuration=mergeVisibleConfiguration(await configResponse.json());let clock_background={present:false};if(hasClockBackground){const backgroundResponse=await fetch('/clock-background?ts='+Date.now(),{cache:'no-store'});if(!backgroundResponse.ok)throw Error("L'image de fond est indisponible");const bytes=new Uint8Array(await backgroundResponse.arrayBuffer());if(bytes.length!==153600)throw Error("L'image de fond est invalide");clock_background={present:true,encoding:'base64',format:'rgb565-le',width:320,height:240,data:bytesToBase64(bytes)}}const backup={format:'btc-watch-complete-backup',schema_version:1,app_version:APP_VERSION,exported_at:new Date().toISOString(),configuration,clock_background};const date=new Date().toISOString().slice(0,10);downloadJSON('btc-watch-sauvegarde-'+date+'.json',backup);message(backupMsg,'Sauvegarde complète téléchargée. Conservez-la dans un endroit privé.')}catch(err){message(backupMsg,'Sauvegarde impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false}};
 backupFile.onchange=async e=>{const file=e.target.files[0];if(!file)return;backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const backup=JSON.parse(await file.text()),required=['ssid','pass','ap_password','tz','currency','price_api','clock_color','clock_background','clock_title','clock_subtitle','clock_title_color','clock_subtitle_color','clock_bar_color','clock_button_color','clock_bar_same_as_time','clock_button_same_as_time','clock_bar_visible','clock_outline_visible','brightness','wallets'];if(backup.format!=='btc-watch-complete-backup'||backup.schema_version!==1||!backup.configuration||!backup.clock_background)throw Error('Ce fichier n’est pas une sauvegarde BTC Watch compatible');const missing=required.filter(key=>!Object.prototype.hasOwnProperty.call(backup.configuration,key));if(missing.length)throw Error('Réglages manquants : '+missing.join(', '));if(!confirm('Restaurer toute cette configuration ? Les réglages, adresses, mots de passe et image actuels seront remplacés.'))return;if(backup.clock_background.present){if(backup.clock_background.encoding!=='base64'||backup.clock_background.format!=='rgb565-le'||backup.clock_background.width!==320||backup.clock_background.height!==240)throw Error("Format d'image non compatible");const bytes=base64ToBytes(String(backup.clock_background.data||''));if(bytes.length!==153600)throw Error("Données de l'image incomplètes");const imageBody=new FormData();imageBody.append('background',new Blob([bytes],{type:'application/octet-stream'}),'clock_bg.rgb565');const imageResponse=await fetch('/clock-background',{method:'POST',body:imageBody});if(!imageResponse.ok){const problem=await imageResponse.json().catch(()=>({}));throw Error(problem.message||"Restauration de l'image impossible")}hasClockBackground=true}else{const deleteResponse=await fetch('/clock-background/delete',{method:'POST'});if(!deleteResponse.ok)throw Error("Suppression de l'ancien fond impossible");hasClockBackground=false}const body=new FormData();body.set('config_json',JSON.stringify(backup.configuration));const response=await fetch('/configuration/import',{method:'POST',body});const result=await response.json().catch(()=>({message:'Réponse illisible'}));if(!response.ok)throw Error(result.message||'Restauration impossible');message(backupMsg,'Configuration complète restaurée. BTC Watch redémarre pour tout réappliquer.');setTimeout(()=>location.reload(),7000)}catch(err){message(backupMsg,'Import impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false;e.target.value=''}};
-b.oninput=()=>bv.textContent=b.value;f.onsubmit=async e=>{e.preventDefault();sm.style.display='none';const cleaned=[];const seen=new Set();for(const w of wallets){w.collection=String(w.collection||'Manuel').trim().slice(0,18)||'Manuel';w.label=String(w.label||'Adresse').trim().slice(0,18)||'Adresse';w.address=String(w.address||'').trim();if(!w.address)continue;if(!valid(w.address))return message(sm,'Adresse invalide : '+w.address,false);const k=key(w.address);if(seen.has(k))continue;seen.add(k);cleaned.push(w)}wallets.splice(0,wallets.length,...cleaned);const body=new FormData(f);body.set('wallets_json',JSON.stringify(wallets));const r=await fetch('/save',{method:'POST',body});const j=await r.json().catch(()=>({message:'Reponse illisible'}));if(r.ok){render();message(sm,j.saved+' adresse(s) enregistree(s).')}else message(sm,j.message||'Enregistrement impossible.',false)};document.querySelector('#reboot').onclick=()=>fetch('/reboot',{method:'POST'});render();
+b.oninput=()=>bv.textContent=b.value;f.onsubmit=async e=>{e.preventDefault();sm.style.display='none';const currentPassword=f.elements.current_password.value,newPassword=f.elements.new_password.value,confirmPassword=f.elements.confirm_password.value,passwordChange=currentPassword||newPassword||confirmPassword;if(passwordChange){if(!currentPassword||!newPassword||!confirmPassword)return message(sm,'Remplissez les trois champs du mot de passe.',false);if(newPassword.length<8||newPassword.length>63)return message(sm,'Le nouveau mot de passe doit contenir entre 8 et 63 caractères.',false);if(newPassword!==confirmPassword)return message(sm,'Les deux nouveaux mots de passe ne correspondent pas.',false)}const cleaned=[];const seen=new Set();for(const w of wallets){w.collection=String(w.collection||'Manuel').trim().slice(0,18)||'Manuel';w.label=String(w.label||'Adresse').trim().slice(0,18)||'Adresse';w.address=String(w.address||'').trim();if(!w.address)continue;if(!valid(w.address))return message(sm,'Adresse invalide : '+w.address,false);const k=key(w.address);if(seen.has(k))continue;seen.add(k);cleaned.push(w)}wallets.splice(0,wallets.length,...cleaned);const body=new FormData(f);body.set('wallets_json',JSON.stringify(wallets));const r=await fetch('/save',{method:'POST',body});const j=await r.json().catch(()=>({message:'Reponse illisible'}));if(r.ok){render();if(passwordChange){f.elements.current_password.value='';f.elements.new_password.value='';f.elements.confirm_password.value=''}message(sm,j.saved+' adresse(s) enregistree(s).')}else message(sm,j.message||'Enregistrement impossible.',false)};document.querySelector('#reboot').onclick=()=>fetch('/reboot',{method:'POST'});render();
 </script></body></html>)HTML");
   return page;
 }
