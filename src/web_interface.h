@@ -25,10 +25,11 @@ private:
   size_t clockBackgroundUploadBytes;
   size_t clockBackgroundUploadLimit;
   bool clockBackgroundUploadOK;
+  bool clockBackgroundUploadRemovedFile;
   uint8_t clockBackgroundUploadSlot;
   String clockBackgroundUploadError;
 
-  String generateHTML();
+  void sendHTML();
   String generateLoginHTML(bool invalidPassword = false);
   String htmlEscape(const String &value);
   bool isAuthenticated();

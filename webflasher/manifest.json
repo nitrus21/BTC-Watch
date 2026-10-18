@@ -1,6 +1,6 @@
 {
   "name": "BTC Watch",
-  "version": "0.9.9",
+  "version": "1.0.0",
   "new_install_prompt_erase": false,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -9,7 +9,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "firmware/btc-watch-0.9.9-esp32-2432s028r.factory.bin",
+          "path": "firmware/btc-watch-1.0.0-esp32-2432s028r.factory.bin",
           "offset": 0
         }
       ]

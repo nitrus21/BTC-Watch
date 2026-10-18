@@ -87,7 +87,7 @@ bool networkWorkerBusy = false;
 void render() {
   display.render(currentScreen, settings, addressMonitor, btcPrice, priceChange,
                  feeLow, feeMedium, feeHigh, network.isConnected(), currentTime,
-                 marketRefreshRequested);
+                 marketRefreshRequested || btcPrice <= 0.0f);
 }
 
 bool inClockSlideshow(uint8_t slot) {
@@ -404,6 +404,10 @@ void handleTouch() {
     if (settings.devise == selectedCurrency) return;
     settings.devise = selectedCurrency;
     settings.save();
+    // L'ancien cours est dans l'autre devise : il est oublie jusqu'a la
+    // prochaine reponse valide.
+    btcPrice = 0.0f;
+    priceChange = 0.0f;
     marketRefreshRequested = true;
     render();
     return;

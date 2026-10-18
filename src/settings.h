@@ -48,7 +48,9 @@ public:
   Settings();
   void load();
   void save();
-  bool restoreFromJson(const String &json, String &errorMessage);
+  // Avec apply = false, verifie seulement la sauvegarde sans rien modifier.
+  bool restoreFromJson(const String &json, String &errorMessage,
+                       bool apply = true);
   bool hasStoredConfiguration() const;
   bool factoryReset();
   uint8_t walletCount() const;

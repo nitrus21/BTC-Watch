@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 0.9.9" src="https://img.shields.io/badge/version-0.9.9-F7931A?style=for-the-badge">
+  <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-F7931A?style=for-the-badge">
   <img alt="ESP32-2432S028R" src="https://img.shields.io/badge/ESP32-2432S028R-E7352C?style=for-the-badge&amp;logo=espressif&amp;logoColor=white">
   <img alt="PlatformIO" src="https://img.shields.io/badge/PlatformIO-compatible-FF7F00?style=for-the-badge&amp;logo=platformio&amp;logoColor=white">
   <img alt="Licence MIT" src="https://img.shields.io/badge/licence-MIT-31C48D?style=for-the-badge">
@@ -19,12 +19,23 @@ BTC Watch surveille jusqu'à 64 adresses Bitcoin publiques et affiche leur solde
 total, leur contre-valeur en euros ou en dollars, le cours du Bitcoin, les frais
 du réseau et une horloge entièrement personnalisable.
 
-> Version actuelle : **0.9.9**
+> Version actuelle : **1.0.0**
+
+### Nouveautés de la version 1.0.0
+
+- démarrage direct sur l'horloge dès que le Wi-Fi enregistré est connecté ;
+- galerie de 10 images de fond, choix de l'image par défaut et diaporama
+  avec durée d'affichage réglable ;
+- sauvegarde complète incluant toutes les images, vérifiée avant
+  restauration ;
+- page d'administration envoyée par morceaux pour économiser la mémoire ;
+- le cours n'est plus affiché dans l'ancienne devise après un échec de
+  l'API.
 
 ## 📘 Manuel officiel illustré
 
-Le [manuel utilisateur BTC Watch v0.9.9](webflasher/downloads/manuel-btc-watch-v0.9.9.pdf)
-propose **20 pages illustrées avec les véritables écrans de l'appareil et du
+Le [manuel utilisateur BTC Watch v0.9.9](webflasher/downloads/manuel-btc-watch-v0.9.9.pdf),
+rédigé pour la version précédente, propose **20 pages illustrées avec les véritables écrans de l'appareil et du
 panneau d'administration**. Il détaille l'installation, la première connexion,
 chaque écran tactile, tous les réglages Web, les sauvegardes, le mode panique
 et la remise à zéro d'usine avec le bouton BOOT.
@@ -216,7 +227,7 @@ flowchart LR
 
 Le manifeste utilise l'image factory :
 
-    webflasher/firmware/btc-watch-0.9.9-esp32-2432s028r.factory.bin
+    webflasher/firmware/btc-watch-1.0.0-esp32-2432s028r.factory.bin
 
 Cette image contient le bootloader, la table des partitions, les données de
 démarrage OTA et le programme principal.

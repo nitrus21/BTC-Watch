@@ -651,7 +651,11 @@ void CYDDisplay::drawPortfolio(const Settings &settings,
     const double fiat = static_cast<double>(monitor.totalSats()) / 100000000.0 * btcPrice;
     tft.setTextFont(2);
     tft.setTextColor(C_ORANGE, C_PANEL);
-    tft.drawString(formatFiat(fiat, settings.devise), 26, 108);
+    // Sans cours valide, aucune valeur en devise n'est affichee.
+    tft.drawString(btcPrice > 0.0f ? formatFiat(fiat, settings.devise)
+                                   : String("Cours " + settings.devise +
+                                            " en attente"),
+                   26, 108);
   }
   drawBitcoinIcon(273, 87, 23);
 

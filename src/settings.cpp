@@ -238,7 +238,8 @@ void Settings::save() {
   file.close();
 }
 
-bool Settings::restoreFromJson(const String &json, String &errorMessage) {
+bool Settings::restoreFromJson(const String &json, String &errorMessage,
+                               bool apply) {
   JsonDocument doc;
   const DeserializationError jsonError = deserializeJson(doc, json);
   if (jsonError || !doc.is<JsonObject>()) {
@@ -392,8 +393,9 @@ bool Settings::restoreFromJson(const String &json, String &errorMessage) {
     }
   }
 
+  errorMessage = "";
+  if (!apply) return true;
   *this = restored;
   save();
-  errorMessage = "";
   return true;
 }

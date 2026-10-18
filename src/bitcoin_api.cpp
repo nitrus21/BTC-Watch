@@ -29,6 +29,10 @@ String BitcoinAPI::stripSeparators(const String &s) {
 }
 
 void BitcoinAPI::updatePrice(const String &api, const String &currency) {
+  // Sans reponse valide, le prix reste a 0 : l'ancien cours, peut-etre dans
+  // l'autre devise, ne doit jamais etre presente comme un resultat a jour.
+  lastPrice = 0.0;
+  priceChange = 0.0;
   if (WiFi.status() != WL_CONNECTED)
     return;
 

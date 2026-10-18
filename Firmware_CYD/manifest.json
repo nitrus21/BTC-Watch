@@ -1,6 +1,6 @@
 {
   "name": "BTC Watch - ESP32-2432S028R",
-  "version": "0.9.9",
+  "version": "1.0.0",
   "new_install_prompt_erase": false,
   "builds": [
     {
