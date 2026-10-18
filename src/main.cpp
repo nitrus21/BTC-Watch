@@ -46,6 +46,7 @@ bool factoryResetOverlayVisible = false;
 uint8_t lastFactoryCountdown = 255;
 uint8_t panicTapCount = 0;
 unsigned long lastPanicTapAt = 0;
+unsigned long lastSlideshowChange = 0;
 
 enum class NetworkJobKind : uint8_t { None, Market, Wallet, TimeRecovery };
 
@@ -87,6 +88,50 @@ void render() {
   display.render(currentScreen, settings, addressMonitor, btcPrice, priceChange,
                  feeLow, feeMedium, feeHigh, network.isConnected(), currentTime,
                  marketRefreshRequested);
+}
+
+bool inClockSlideshow(uint8_t slot) {
+  return slot < MAX_CLOCK_BACKGROUNDS &&
+         (settings.clockSlideshowMask & (1U << slot)) &&
+         Settings::clockBackgroundExists(slot);
+}
+
+// Image suivante du diaporama apres current, en boucle. Renvoie current s'il
+// est la seule image selectionnee, ou CLOCK_BACKGROUND_NONE si aucune.
+uint8_t nextSlideshowSlot(uint8_t current) {
+  const uint8_t start = current < MAX_CLOCK_BACKGROUNDS ? current + 1 : 0;
+  for (uint8_t i = 0; i < MAX_CLOCK_BACKGROUNDS; ++i) {
+    const uint8_t slot = (start + i) % MAX_CLOCK_BACKGROUNDS;
+    if (inClockSlideshow(slot)) return slot;
+  }
+  return CLOCK_BACKGROUND_NONE;
+}
+
+// Applique l'image par defaut, ou la premiere image du diaporama si l'image
+// par defaut n'en fait pas partie.
+void applyClockBackgroundSettings() {
+  uint8_t slot = settings.clockBackgroundSlot;
+  if (settings.clockSlideshowEnabled && !inClockSlideshow(slot)) {
+    const uint8_t first = nextSlideshowSlot(CLOCK_BACKGROUND_NONE);
+    if (first != CLOCK_BACKGROUND_NONE) slot = first;
+  }
+  display.setClockBackgroundSlot(slot);
+  lastSlideshowChange = millis();
+}
+
+void serviceClockSlideshow() {
+  if (!settings.clockSlideshowEnabled || currentScreen != UiScreen::Clock)
+    return;
+  const unsigned long now = millis();
+  if (now - lastSlideshowChange <
+      static_cast<unsigned long>(settings.clockSlideshowSeconds) * 1000UL)
+    return;
+  lastSlideshowChange = now;
+  const uint8_t current = display.clockBackgroundSlot();
+  const uint8_t next = nextSlideshowSlot(current);
+  if (next == CLOCK_BACKGROUND_NONE || next == current) return;
+  display.setClockBackgroundSlot(next);
+  render();
 }
 
 void requestFullRefresh() {
@@ -374,6 +419,8 @@ void handleTouch() {
                         static_cast<uint8_t>(TouchAction::ShowPortfolio);
   if (index <= 4) {
     currentScreen = static_cast<UiScreen>(index);
+    // L'image affichee en arrivant sur l'horloge reste visible toute la duree.
+    if (currentScreen == UiScreen::Clock) lastSlideshowChange = millis();
     render();
   }
 }
@@ -650,6 +697,7 @@ void setup() {
   if (firstRunGuideActive && runFirstRunWifiWizard())
     firstRunGuideActive = false;
   if (bootOnClock) currentScreen = UiScreen::Clock;
+  applyClockBackgroundSettings();
 
   networkWorkerMutex = xSemaphoreCreateMutex();
   if (networkWorkerMutex) {
@@ -693,10 +741,12 @@ void loop() {
     firstRunGuideActive = false;
     display.setBrightness(settings.brightness);
     display.invalidate();
+    applyClockBackgroundSettings();
     addressMonitor.sync(settings);
     requestFullRefresh();
     render();
   }
+  serviceClockSlideshow();
 
   const unsigned long now = millis();
   if (connected && now - lastTimeUpdate >= TIME_UPDATE_INTERVAL) {

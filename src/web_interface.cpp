@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <ESP.h>
 #include <SPIFFS.h>
+#include <TJpg_Decoder.h>
 #include <esp_system.h>
 
 namespace {
@@ -27,11 +28,25 @@ bool validIPv4(const String &value) {
   IPAddress address;
   return address.fromString(value);
 }
+
+// Marge laissee libre sur SPIFFS pour la configuration et la reorganisation
+// interne du systeme de fichiers.
+constexpr size_t SPIFFS_RESERVED_BYTES = 24576;
+
+size_t fileSize(const String &path) {
+  if (!SPIFFS.exists(path)) return 0;
+  fs::File file = SPIFFS.open(path, "r");
+  const size_t size = file ? file.size() : 0;
+  if (file) file.close();
+  return size;
+}
 }
 
 WebInterface::WebInterface(Settings *s, NetworkManager *n)
     : server(new WebServer(80)), settings(s), network(n), settingsChanged(false),
-      clockBackgroundUploadBytes(0), clockBackgroundUploadOK(false) {}
+      clockBackgroundUploadBytes(0), clockBackgroundUploadLimit(0),
+      clockBackgroundUploadOK(false),
+      clockBackgroundUploadSlot(CLOCK_BACKGROUND_NONE) {}
 
 WebInterface::~WebInterface() { delete server; }
 
@@ -70,6 +85,10 @@ void WebInterface::begin() {
   server->on("/clock-background/delete", HTTP_POST,
              [this]() {
                if (requireAuthentication()) handleClockBackgroundDelete();
+             });
+  server->on("/clock-backgrounds", HTTP_GET,
+             [this]() {
+               if (requireAuthentication()) handleClockBackgroundStatus();
              });
   server->on("/configuration", HTTP_GET,
              [this]() {
@@ -316,6 +335,21 @@ void WebInterface::handleSave() {
   settings->clockButtonUseTimeColor = server->hasArg("clock_button_same");
   settings->clockBarVisible = server->hasArg("clock_bar_visible");
   settings->clockOutlineVisible = server->hasArg("clock_outline_visible");
+  if (server->hasArg("clock_background_slot")) {
+    const long slot = server->arg("clock_background_slot").toInt();
+    if ((slot >= 0 && slot < MAX_CLOCK_BACKGROUNDS) ||
+        slot == CLOCK_BACKGROUND_NONE)
+      settings->clockBackgroundSlot = static_cast<uint8_t>(slot);
+  }
+  settings->clockSlideshowEnabled = server->hasArg("clock_slideshow_enabled");
+  if (server->hasArg("clock_slideshow_mask"))
+    settings->clockSlideshowMask = static_cast<uint16_t>(
+        server->arg("clock_slideshow_mask").toInt() &
+        ((1L << MAX_CLOCK_BACKGROUNDS) - 1L));
+  if (server->hasArg("clock_slideshow_seconds"))
+    settings->clockSlideshowSeconds = constrain(
+        server->arg("clock_slideshow_seconds").toInt(),
+        CLOCK_SLIDESHOW_MIN_SECONDS, CLOCK_SLIDESHOW_MAX_SECONDS);
   if (server->hasArg("tz")) settings->timezone = server->arg("tz");
   if (server->hasArg("brightness"))
     settings->brightness = constrain(server->arg("brightness").toInt(), 30, 255);
@@ -400,7 +434,67 @@ void WebInterface::handleWifiScan() {
   server->send(200, "application/json", json);
 }
 
+// Renvoie false sans argument slot (ancien fond RGB565). Avec un argument
+// invalide, slot vaut CLOCK_BACKGROUND_NONE.
+bool WebInterface::requestedClockBackgroundSlot(uint8_t &slot) {
+  if (!server->hasArg("slot")) return false;
+  const String value = server->arg("slot");
+  slot = CLOCK_BACKGROUND_NONE;
+  if (value.isEmpty() || value.length() > 2) return true;
+  for (size_t i = 0; i < value.length(); ++i)
+    if (!isDigit(value.charAt(i))) return true;
+  const long parsed = value.toInt();
+  if (parsed >= 0 && parsed < MAX_CLOCK_BACKGROUNDS)
+    slot = static_cast<uint8_t>(parsed);
+  return true;
+}
+
+String WebInterface::clockBackgroundStatusJson() {
+  JsonDocument doc;
+  doc["ok"] = true;
+  JsonArray slots = doc["slots"].to<JsonArray>();
+  for (uint8_t slot = 0; slot < MAX_CLOCK_BACKGROUNDS; ++slot) {
+    const size_t size = fileSize(Settings::clockBackgroundPath(slot));
+    JsonObject item = slots.add<JsonObject>();
+    item["slot"] = slot;
+    item["present"] = size > 0;
+    item["bytes"] = size;
+  }
+  doc["legacy"] = fileSize(CLOCK_BACKGROUND_PATH) == CLOCK_BACKGROUND_BYTES;
+  doc["total"] = SPIFFS.totalBytes();
+  doc["used"] = SPIFFS.usedBytes();
+  doc["max_bytes"] = CLOCK_BACKGROUND_MAX_JPEG_BYTES;
+  String json;
+  serializeJson(doc, json);
+  return json;
+}
+
+void WebInterface::handleClockBackgroundStatus() {
+  server->sendHeader("Cache-Control", "no-store");
+  server->send(200, "application/json", clockBackgroundStatusJson());
+}
+
 void WebInterface::handleClockBackgroundGet() {
+  uint8_t slot = CLOCK_BACKGROUND_NONE;
+  if (requestedClockBackgroundSlot(slot)) {
+    if (slot >= MAX_CLOCK_BACKGROUNDS) {
+      server->send(400, "application/json",
+                   "{\"ok\":false,\"message\":\"Emplacement invalide\"}");
+      return;
+    }
+    const String path = Settings::clockBackgroundPath(slot);
+    fs::File file = SPIFFS.exists(path) ? SPIFFS.open(path, "r") : fs::File();
+    if (!file) {
+      server->send(404, "application/json", "{\"ok\":false}");
+      return;
+    }
+    server->sendHeader("Cache-Control", "no-store");
+    server->streamFile(file, "image/jpeg");
+    file.close();
+    return;
+  }
+
+  // Ancien fond RGB565 unique, lu par le panneau pour le convertir en JPEG.
   if (!SPIFFS.exists(CLOCK_BACKGROUND_PATH)) {
     server->send(404, "application/json", "{\"ok\":false}");
     return;
@@ -421,65 +515,146 @@ void WebInterface::handleClockBackgroundUpload() {
   HTTPUpload &upload = server->upload();
   if (upload.status == UPLOAD_FILE_START) {
     if (clockBackgroundUpload) clockBackgroundUpload.close();
-    SPIFFS.remove(CLOCK_BACKGROUND_TEMP_PATH);
+    SPIFFS.remove(CLOCK_BACKGROUND_JPEG_TEMP_PATH);
     clockBackgroundUploadBytes = 0;
+    clockBackgroundUploadLimit = 0;
+    clockBackgroundUploadOK = false;
+    clockBackgroundUploadError = "";
+    uint8_t slot = CLOCK_BACKGROUND_NONE;
+    if (!requestedClockBackgroundSlot(slot) || slot >= MAX_CLOCK_BACKGROUNDS) {
+      clockBackgroundUploadSlot = CLOCK_BACKGROUND_NONE;
+      clockBackgroundUploadError = "Emplacement invalide";
+      return;
+    }
+    clockBackgroundUploadSlot = slot;
+
+    const String path = Settings::clockBackgroundPath(slot);
+    auto availableBytes = []() -> size_t {
+      const size_t total = SPIFFS.totalBytes();
+      const size_t used = SPIFFS.usedBytes() + SPIFFS_RESERVED_BYTES;
+      return total > used ? total - used : 0;
+    };
+    size_t available = availableBytes();
+    // Sans place pour garder l'ancienne image pendant l'envoi, elle est
+    // effacee avant de recevoir la nouvelle.
+    if (available < CLOCK_BACKGROUND_MAX_JPEG_BYTES && SPIFFS.exists(path)) {
+      SPIFFS.remove(path);
+      available = availableBytes();
+    }
+    clockBackgroundUploadLimit =
+        min<size_t>(available, CLOCK_BACKGROUND_MAX_JPEG_BYTES);
+    if (clockBackgroundUploadLimit < 4096) {
+      clockBackgroundUploadError = "Espace de stockage insuffisant";
+      return;
+    }
+    clockBackgroundUpload = SPIFFS.open(CLOCK_BACKGROUND_JPEG_TEMP_PATH, "w");
+    if (!clockBackgroundUpload) {
+      clockBackgroundUploadError = "Ecriture impossible";
+      return;
+    }
     clockBackgroundUploadOK = true;
-    clockBackgroundUpload = SPIFFS.open(CLOCK_BACKGROUND_TEMP_PATH, "w");
-    if (!clockBackgroundUpload) clockBackgroundUploadOK = false;
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!clockBackgroundUploadOK || !clockBackgroundUpload) return;
-    if (clockBackgroundUploadBytes + upload.currentSize >
-        CLOCK_BACKGROUND_BYTES) {
+    if (clockBackgroundUploadBytes == 0 &&
+        (upload.currentSize < 2 || upload.buf[0] != 0xFF ||
+         upload.buf[1] != 0xD8)) {
       clockBackgroundUploadOK = false;
+      clockBackgroundUploadError = "Le fichier n'est pas une image JPEG";
+      return;
+    }
+    if (clockBackgroundUploadBytes + upload.currentSize >
+        clockBackgroundUploadLimit) {
+      clockBackgroundUploadOK = false;
+      clockBackgroundUploadError =
+          clockBackgroundUploadLimit < CLOCK_BACKGROUND_MAX_JPEG_BYTES
+              ? "Espace de stockage insuffisant"
+              : "Image trop volumineuse";
       return;
     }
     const size_t written =
         clockBackgroundUpload.write(upload.buf, upload.currentSize);
     clockBackgroundUploadBytes += written;
-    if (written != upload.currentSize) clockBackgroundUploadOK = false;
+    if (written != upload.currentSize) {
+      clockBackgroundUploadOK = false;
+      clockBackgroundUploadError = "Ecriture impossible";
+    }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (clockBackgroundUpload) clockBackgroundUpload.close();
-    clockBackgroundUploadOK =
-        clockBackgroundUploadOK &&
-        clockBackgroundUploadBytes == CLOCK_BACKGROUND_BYTES;
     if (clockBackgroundUploadOK) {
-      SPIFFS.remove(CLOCK_BACKGROUND_PATH);
-      clockBackgroundUploadOK = SPIFFS.rename(CLOCK_BACKGROUND_TEMP_PATH,
-                                               CLOCK_BACKGROUND_PATH);
+      uint16_t width = 0;
+      uint16_t height = 0;
+      if (TJpgDec.getFsJpgSize(&width, &height,
+                               CLOCK_BACKGROUND_JPEG_TEMP_PATH,
+                               SPIFFS) != JDR_OK ||
+          width != DISPLAY_WIDTH || height != DISPLAY_HEIGHT) {
+        clockBackgroundUploadOK = false;
+        clockBackgroundUploadError = "L'image doit etre un JPEG de 320 x 240";
+      }
     }
-    if (!clockBackgroundUploadOK) SPIFFS.remove(CLOCK_BACKGROUND_TEMP_PATH);
+    if (clockBackgroundUploadOK) {
+      const String path = Settings::clockBackgroundPath(clockBackgroundUploadSlot);
+      SPIFFS.remove(path);
+      clockBackgroundUploadOK =
+          SPIFFS.rename(CLOCK_BACKGROUND_JPEG_TEMP_PATH, path);
+      if (!clockBackgroundUploadOK)
+        clockBackgroundUploadError = "Enregistrement impossible";
+    }
+    if (!clockBackgroundUploadOK) SPIFFS.remove(CLOCK_BACKGROUND_JPEG_TEMP_PATH);
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     if (clockBackgroundUpload) clockBackgroundUpload.close();
     clockBackgroundUploadOK = false;
-    SPIFFS.remove(CLOCK_BACKGROUND_TEMP_PATH);
+    clockBackgroundUploadError = "Envoi interrompu";
+    SPIFFS.remove(CLOCK_BACKGROUND_JPEG_TEMP_PATH);
   }
 }
 
 void WebInterface::handleClockBackgroundUploadComplete() {
-  if (!clockBackgroundUploadOK ||
-      !SPIFFS.exists(CLOCK_BACKGROUND_PATH)) {
-    server->send(400, "application/json",
-                 "{\"ok\":false,\"message\":\"Image incomplete ou invalide\"}");
+  const bool success =
+      clockBackgroundUploadOK &&
+      clockBackgroundUploadSlot < MAX_CLOCK_BACKGROUNDS &&
+      Settings::clockBackgroundExists(clockBackgroundUploadSlot);
+  const String error = clockBackgroundUploadError;
+  // Un envoi suivant sans fichier ne doit pas reutiliser cet etat.
+  clockBackgroundUploadOK = false;
+  clockBackgroundUploadSlot = CLOCK_BACKGROUND_NONE;
+  clockBackgroundUploadError = "";
+  if (!success) {
+    JsonDocument response;
+    response["ok"] = false;
+    response["message"] =
+        error.isEmpty() ? "Image incomplete ou invalide" : error;
+    String json;
+    serializeJson(response, json);
+    server->send(400, "application/json", json);
     return;
   }
   settingsChanged = true;
-  server->send(200, "application/json",
-               "{\"ok\":true,\"bytes\":" +
-                   String(clockBackgroundUploadBytes) + "}");
+  server->send(200, "application/json", clockBackgroundStatusJson());
 }
 
 void WebInterface::handleClockBackgroundDelete() {
   if (clockBackgroundUpload) clockBackgroundUpload.close();
   SPIFFS.remove(CLOCK_BACKGROUND_TEMP_PATH);
-  const bool existed = SPIFFS.exists(CLOCK_BACKGROUND_PATH);
-  const bool removed = !existed || SPIFFS.remove(CLOCK_BACKGROUND_PATH);
+  SPIFFS.remove(CLOCK_BACKGROUND_JPEG_TEMP_PATH);
+  uint8_t slot = CLOCK_BACKGROUND_NONE;
+  String path = CLOCK_BACKGROUND_PATH;
+  if (requestedClockBackgroundSlot(slot)) {
+    if (slot >= MAX_CLOCK_BACKGROUNDS) {
+      server->send(400, "application/json",
+                   "{\"ok\":false,\"message\":\"Emplacement invalide\"}");
+      return;
+    }
+    path = Settings::clockBackgroundPath(slot);
+  }
+  const bool existed = SPIFFS.exists(path);
+  const bool removed = !existed || SPIFFS.remove(path);
   if (!removed) {
     server->send(500, "application/json",
                  "{\"ok\":false,\"message\":\"Suppression impossible\"}");
     return;
   }
   settingsChanged = true;
-  server->send(200, "application/json", "{\"ok\":true}");
+  server->send(200, "application/json", clockBackgroundStatusJson());
 }
 
 void WebInterface::handleConfigurationExport() {
@@ -540,18 +715,11 @@ String WebInterface::generateHTML() {
   initialWallets.replace("<", "\\u003c");
   initialWallets.replace(">", "\\u003e");
   initialWallets.replace("&", "\\u0026");
-  bool hasClockBackground = false;
-  if (SPIFFS.exists(CLOCK_BACKGROUND_PATH)) {
-    fs::File background = SPIFFS.open(CLOCK_BACKGROUND_PATH, "r");
-    hasClockBackground =
-        background && background.size() == CLOCK_BACKGROUND_BYTES;
-    if (background) background.close();
-  }
 
   String page;
-  page.reserve(20000);
+  page.reserve(32000);
   page += F(R"HTML(<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BTC Watch</title><style>
-:root{--bg:#000;--card:#090909;--card2:#141414;--line:#303030;--text:#f0f3f8;--muted:#969696;--btc:#f7931a;--green:#45d483;--red:#ff6577}*{box-sizing:border-box}body{margin:0;background:#000;color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{width:min(820px,100%);margin:auto;padding:24px 16px 48px}.hero{text-align:center;margin-bottom:20px}.coin{display:grid;place-items:center;width:62px;height:82px;margin:auto}.coin img{display:block;width:56px;height:auto}.hero h1{margin:12px 0 4px;font-size:26px}.hero p{margin:0;color:var(--btc);font-size:13px;font-weight:800;letter-spacing:.08em}#settings{display:flex;flex-direction:column}.wifi-card{order:10}.security-card{order:15}.market-card{order:20}.clock-card{order:30}.addresses-card{order:40}.backup-card{order:50}.maintenance-card{order:60}.actions{order:70}#saveMsg{order:80}.card{background:linear-gradient(145deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 34px #0005}.titlebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.title{display:flex;align-items:center;gap:9px;margin-bottom:14px;font-weight:800}.titlebar .title{margin-bottom:0}.dot{width:9px;height:9px;border-radius:50%;background:var(--btc);box-shadow:0 0 10px var(--btc)}.badge{background:#050505;border:1px solid var(--line);border-radius:999px;padding:5px 10px;color:var(--btc);font-size:12px}.tools{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:14px}.file{position:relative;overflow:hidden}.file input{position:absolute;inset:0;opacity:0;cursor:pointer}.btn{border:0;border-radius:10px;padding:11px 14px;font-weight:800;cursor:pointer}.primary{background:var(--btc);color:#171008}.secondary{background:#242424;color:var(--text)}.danger{background:#3a1e28;color:#ff9baa}.wallets{display:grid;gap:9px}.wallet{display:grid;grid-template-columns:130px 1fr 1.8fr 38px;gap:8px;align-items:end;padding:11px;border:1px solid var(--line);border-radius:12px;background:#050505}.remove{height:40px;background:#3a1e28;color:#ff9baa;border:0;border-radius:9px;font-size:18px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.subsection{grid-column:1/-1;margin-top:6px;padding-top:12px;border-top:1px solid var(--line)}.subsection:first-child{margin-top:0;padding-top:0;border-top:0}.subsection strong{display:block;color:var(--text);font-size:14px}.subsection span{display:block;margin-top:3px;color:var(--muted);font-size:12px}.checkline{display:flex;align-items:center;gap:8px;margin-top:7px;color:var(--text)}.checkline input{width:auto;accent-color:var(--btc)}.image-panel{grid-column:1/-1;display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:14px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:#050505}.image-preview{width:100%;aspect-ratio:4/3;border:1px solid var(--line);border-radius:9px;background:#000;image-rendering:auto}.image-actions{display:flex;flex-direction:column;gap:9px}.image-actions .btn{width:100%;text-align:center}.image-status{color:var(--muted);font-size:12px;line-height:1.45}label{display:block;color:var(--muted);font-size:12px;margin:0 0 5px}input,select{width:100%;border:1px solid var(--line);border-radius:9px;background:#050505;color:var(--text);padding:10px;outline:none}input:focus,select:focus{border-color:var(--btc)}.scan{width:100%;margin-top:7px}.info-box{display:flex;min-height:64px;flex-direction:column;justify-content:center;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:#050505}.info-box strong{font-size:13px}.info-box span{margin-top:3px;color:var(--muted);font-size:12px}.backup-box{padding:14px;border:1px solid var(--line);border-radius:12px;background:#050505}.backup-box .tools{margin:0 0 10px}.maintenance{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid #673421;border-radius:12px;background:#251207}.maintenance p{margin:0;color:#d9b08d;font-size:12px;line-height:1.5}.key{display:inline-block;margin:0 3px;padding:2px 7px;border:1px solid #9f5730;border-radius:6px;background:#080808;color:var(--btc);font-weight:800}.actions{display:flex;gap:10px;margin-top:18px}.actions .btn{flex:1}.msg{display:none;border-radius:10px;padding:11px;margin:12px 0 0;text-align:center;font-weight:700}.ok{display:block;background:#173525;color:var(--green)}.error{display:block;background:#3a1e28;color:#ff9baa}.hint{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:700px){.wallet{grid-template-columns:1fr 1fr}.wallet .address{grid-column:1/-1}.grid{grid-template-columns:1fr}.remove{grid-column:2;grid-row:1}.maintenance{align-items:stretch;flex-direction:column}.image-panel{grid-template-columns:1fr}}
+:root{--bg:#000;--card:#090909;--card2:#141414;--line:#303030;--text:#f0f3f8;--muted:#969696;--btc:#f7931a;--green:#45d483;--red:#ff6577}*{box-sizing:border-box}body{margin:0;background:#000;color:var(--text);font-family:Inter,system-ui,sans-serif}.wrap{width:min(820px,100%);margin:auto;padding:24px 16px 48px}.hero{text-align:center;margin-bottom:20px}.coin{display:grid;place-items:center;width:62px;height:82px;margin:auto}.coin img{display:block;width:56px;height:auto}.hero h1{margin:12px 0 4px;font-size:26px}.hero p{margin:0;color:var(--btc);font-size:13px;font-weight:800;letter-spacing:.08em}#settings{display:flex;flex-direction:column}.wifi-card{order:10}.security-card{order:15}.market-card{order:20}.clock-card{order:30}.addresses-card{order:40}.backup-card{order:50}.maintenance-card{order:60}.actions{order:70}#saveMsg{order:80}.card{background:linear-gradient(145deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 34px #0005}.titlebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.title{display:flex;align-items:center;gap:9px;margin-bottom:14px;font-weight:800}.titlebar .title{margin-bottom:0}.dot{width:9px;height:9px;border-radius:50%;background:var(--btc);box-shadow:0 0 10px var(--btc)}.badge{background:#050505;border:1px solid var(--line);border-radius:999px;padding:5px 10px;color:var(--btc);font-size:12px}.tools{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:14px}.file{position:relative;overflow:hidden}.file input{position:absolute;inset:0;opacity:0;cursor:pointer}.btn{border:0;border-radius:10px;padding:11px 14px;font-weight:800;cursor:pointer}.primary{background:var(--btc);color:#171008}.secondary{background:#242424;color:var(--text)}.danger{background:#3a1e28;color:#ff9baa}.wallets{display:grid;gap:9px}.wallet{display:grid;grid-template-columns:130px 1fr 1.8fr 38px;gap:8px;align-items:end;padding:11px;border:1px solid var(--line);border-radius:12px;background:#050505}.remove{height:40px;background:#3a1e28;color:#ff9baa;border:0;border-radius:9px;font-size:18px;cursor:pointer}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.subsection{grid-column:1/-1;margin-top:6px;padding-top:12px;border-top:1px solid var(--line)}.subsection:first-child{margin-top:0;padding-top:0;border-top:0}.subsection strong{display:block;color:var(--text);font-size:14px}.subsection span{display:block;margin-top:3px;color:var(--muted);font-size:12px}.checkline{display:flex;align-items:center;gap:8px;margin-top:7px;color:var(--text)}.checkline input{width:auto;accent-color:var(--btc)}.gallery-head{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}.gallery-head .checkline{margin:0}.gallery{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px}.gallery-msg{grid-column:1/-1}.slot{display:flex;flex-direction:column;gap:7px;padding:9px;border:1px solid var(--line);border-radius:12px;background:#050505}.slot.default{border-color:var(--btc);box-shadow:inset 0 0 0 1px var(--btc)}.slot-top{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-size:13px}.slot-top span{color:var(--muted);font-size:11px}.slot img,.slot .ph{display:block;width:100%;aspect-ratio:4/3;border-radius:8px;background:#000;object-fit:cover}.slot .ph{display:grid;place-items:center;border:1px dashed var(--line);color:#666;font-size:11px;letter-spacing:.08em}.slot .checkline{margin:0;font-size:13px}.slot-actions{display:flex;gap:6px}.slot-actions .btn{flex:1;min-width:0;padding:8px 4px;font-size:12px;text-align:center}.btn:disabled{opacity:.4;cursor:not-allowed}.image-status{color:var(--muted);font-size:12px;line-height:1.45}label{display:block;color:var(--muted);font-size:12px;margin:0 0 5px}input,select{width:100%;border:1px solid var(--line);border-radius:9px;background:#050505;color:var(--text);padding:10px;outline:none}input:focus,select:focus{border-color:var(--btc)}.scan{width:100%;margin-top:7px}.info-box{display:flex;min-height:64px;flex-direction:column;justify-content:center;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:#050505}.info-box strong{font-size:13px}.info-box span{margin-top:3px;color:var(--muted);font-size:12px}.backup-box{padding:14px;border:1px solid var(--line);border-radius:12px;background:#050505}.backup-box .tools{margin:0 0 10px}.maintenance{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px;border:1px solid #673421;border-radius:12px;background:#251207}.maintenance p{margin:0;color:#d9b08d;font-size:12px;line-height:1.5}.key{display:inline-block;margin:0 3px;padding:2px 7px;border:1px solid #9f5730;border-radius:6px;background:#080808;color:var(--btc);font-weight:800}.actions{display:flex;gap:10px;margin-top:18px}.actions .btn{flex:1}.msg{display:none;border-radius:10px;padding:11px;margin:12px 0 0;text-align:center;font-weight:700}.ok{display:block;background:#173525;color:var(--green)}.error{display:block;background:#3a1e28;color:#ff9baa}.hint{font-size:12px;color:var(--muted);line-height:1.5}@media(max-width:700px){.wallet{grid-template-columns:1fr 1fr}.wallet .address{grid-column:1/-1}.grid{grid-template-columns:1fr}.remove{grid-column:2;grid-row:1}.maintenance{align-items:stretch;flex-direction:column}.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.slot-actions{flex-direction:column}}
 </style></head><body><main class="wrap"><header class="hero"><div class="coin"><img alt="Bitcoin" src="data:image/png;base64,)HTML");
   page += FPSTR(WEB_LOGO_BASE64);
   page += F(R"HTML("></div><h1>BTC Watch</h1><p>VERSION )HTML");
@@ -591,13 +759,34 @@ String WebInterface::generateHTML() {
   page += htmlEscape(settings->clockColor);
   page += F("'></div><div><label>Fond de l'horloge</label><input type='color' name='clock_background' value='");
   page += htmlEscape(settings->clockBackground);
-  page += F(R"HTML('></div><div class='subsection'><strong>Image d'arrière-plan</strong><span>Le navigateur recadre et convertit automatiquement l'image en RGB565 320 × 240.</span></div><div class='image-panel'><canvas id='clockBgPreview' class='image-preview' width='320' height='240'></canvas><div class='image-actions'><label class='btn primary file'>Choisir ou remplacer l'image<input id='clockBgFile' type='file' accept='image/png,image/jpeg,image/webp,image/gif'></label><button class='btn danger' id='clockBgDelete' type='button')HTML");
-  if (!hasClockBackground) page += F(" disabled");
-  page += F(R"HTML(>Supprimer l'image</button><div id='clockBgStatus' class='image-status'>)HTML");
-  page += hasClockBackground
-              ? F("Une image personnalisée est enregistrée sur BTC Watch.")
-              : F("Aucune image enregistrée. La couleur de fond est utilisée.");
-  page += F(R"HTML(</div><div id='clockBgMsg' class='msg'></div></div></div><label class='checkline'><input type='checkbox' name='clock_outline_visible' value='1')HTML");
+  page += F(R"HTML('></div><div class='subsection'><strong>Images d'arrière-plan</strong><span>Jusqu'à 10 images. Le navigateur recadre chaque photo en 320 × 240 et la compresse en JPEG. L'image par défaut et le diaporama s'appliquent après « Enregistrer et actualiser ».</span></div><div class='gallery-head'><label class='checkline'><input type='radio' name='clock_background_slot' value='255')HTML");
+  page += checked(settings->clockBackgroundSlot == CLOCK_BACKGROUND_NONE);
+  page += F(R"HTML(>Aucune image : couleur de fond seule</label><span id='bgSpace' class='image-status'></span></div><div id='gallery' class='gallery'></div><div id='clockBgMsg' class='msg gallery-msg'></div><div class='subsection'><strong>Diaporama</strong><span>Fait défiler sur l'écran Heure les images cochées « Diaporama ».</span></div><div><label class='checkline'><input type='checkbox' name='clock_slideshow_enabled' value='1')HTML");
+  page += checked(settings->clockSlideshowEnabled);
+  page += F(R"HTML(>Activer le diaporama</label><div id='slideCount' class='image-status'></div></div><div><label>Durée d'affichage de chaque image</label><select name='clock_slideshow_seconds'>)HTML");
+  {
+    static const uint16_t durations[] = {5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600};
+    static const char *const durationLabels[] = {
+        "5 secondes", "10 secondes", "15 secondes", "30 secondes",
+        "1 minute", "2 minutes", "5 minutes", "10 minutes",
+        "15 minutes", "30 minutes", "1 heure"};
+    bool durationListed = false;
+    for (uint8_t i = 0; i < sizeof(durations) / sizeof(durations[0]); ++i) {
+      const bool current = settings->clockSlideshowSeconds == durations[i];
+      durationListed = durationListed || current;
+      page += "<option value='" + String(durations[i]) + "'" +
+              String(current ? " selected" : "") + ">" + durationLabels[i] +
+              "</option>";
+    }
+    // Duree restauree depuis une sauvegarde mais absente de la liste.
+    if (!durationListed)
+      page += "<option value='" + String(settings->clockSlideshowSeconds) +
+              "' selected>" + String(settings->clockSlideshowSeconds) +
+              " secondes</option>";
+  }
+  page += F("</select></div><input type='hidden' id='slideshowMask' name='clock_slideshow_mask' value='");
+  page += String(settings->clockSlideshowMask);
+  page += F(R"HTML('><label class='checkline'><input type='checkbox' name='clock_outline_visible' value='1')HTML");
   page += checked(settings->clockOutlineVisible);
   page += F(R"HTML(>Afficher le contour de l'heure sur l'image</label><div class='subsection'><strong>Textes du cadran</strong><span>Choisissez les deux textes et leur couleur.</span></div><div><label>Texte au-dessus de l'heure</label><input type='text' name='clock_title' maxlength='28' value=')HTML");
   page += htmlEscape(settings->clockTitle);
@@ -617,15 +806,21 @@ String WebInterface::generateHTML() {
   page += checked(settings->clockButtonUseTimeColor);
   page += F(">Utiliser la couleur de l'heure</label><label class='checkline'><input type='checkbox' name='clock_bar_visible' value='1'");
   page += checked(settings->clockBarVisible);
-  page += F(R"HTML(>Afficher la ligne décorative</label></div></div></section><section class="card backup-card"><div class="title"><span class="dot"></span>Sauvegarde personnalisée complète</div><div class="backup-box"><div class="tools"><button class="btn primary" id="backupExport" type="button">Exporter toute la configuration</button><label class="btn secondary file">Importer une sauvegarde complète<input id="backupFile" type="file" accept=".json,application/json"></label></div><div id="backupMsg" class="msg"></div><p class="hint">Un seul fichier JSON conserve les adresses, le Wi-Fi, les mots de passe, les textes, les couleurs, la devise, le fuseau horaire, la luminosité, les options du cadran et l'image de fond. Enregistrez vos modifications avant l'export et gardez ce fichier dans un endroit privé.</p></div></section><section class="card maintenance-card"><div class="title"><span class="dot"></span>Maintenance de l'appareil</div><div class="maintenance"><p><strong>Remise à zéro complète :</strong><br>Appareil allumé, maintenez le bouton arrière <span class="key">BOOT</span> pendant 5 secondes. Le Wi-Fi, les adresses, les couleurs, l'image de fond et le mot de passe BTC Watch seront effacés.</p><button class="btn secondary" id="reboot" type="button">Redémarrer</button></div></section><div class="actions"><button class="btn primary" type="submit">Enregistrer et actualiser</button></div><div id="saveMsg" class="msg"></div></form></main><script>
+  page += F(R"HTML(>Afficher la ligne décorative</label></div></div></section><section class="card backup-card"><div class="title"><span class="dot"></span>Sauvegarde personnalisée complète</div><div class="backup-box"><div class="tools"><button class="btn primary" id="backupExport" type="button">Exporter toute la configuration</button><label class="btn secondary file">Importer une sauvegarde complète<input id="backupFile" type="file" accept=".json,application/json"></label></div><div id="backupMsg" class="msg"></div><p class="hint">Un seul fichier JSON conserve les adresses, le Wi-Fi, les mots de passe, les textes, les couleurs, la devise, le fuseau horaire, la luminosité, les options du cadran, le diaporama et les images de fond. Enregistrez vos modifications avant l'export et gardez ce fichier dans un endroit privé.</p></div></section><section class="card maintenance-card"><div class="title"><span class="dot"></span>Maintenance de l'appareil</div><div class="maintenance"><p><strong>Remise à zéro complète :</strong><br>Appareil allumé, maintenez le bouton arrière <span class="key">BOOT</span> pendant 5 secondes. Le Wi-Fi, les adresses, les couleurs, les images de fond et le mot de passe BTC Watch seront effacés.</p><button class="btn secondary" id="reboot" type="button">Redémarrer</button></div></section><div class="actions"><button class="btn primary" type="submit">Enregistrer et actualiser</button></div><div id="saveMsg" class="msg"></div></form></main><script>
 const APP_VERSION=")HTML");
   page += APP_VERSION;
   page += F(R"HTML(",MAX=)HTML");
   page += String(MAX_WALLETS);
   page += F(", wallets=");
   page += initialWallets;
-  page += F(";let hasClockBackground=");
-  page += hasClockBackground ? F("true") : F("false");
+  page += F(";let bgDefault=");
+  page += String(settings->clockBackgroundSlot);
+  page += F(",bgMask=");
+  page += String(settings->clockSlideshowMask);
+  page += F(";const MAXBG=");
+  page += String(MAX_CLOCK_BACKGROUNDS);
+  page += F(",MAXJPEG=");
+  page += String(CLOCK_BACKGROUND_MAX_JPEG_BYTES);
   page += F(R"HTML(;const box=document.querySelector('#wallets'),count=document.querySelector('#count'),im=document.querySelector('#importMsg'),sm=document.querySelector('#saveMsg');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const key=a=>/^bc1/i.test(a)?a.toLowerCase():a;const valid=a=>/^(bc1|BC1|1|3)[A-Za-z0-9]{13,89}$/.test(a);
@@ -642,17 +837,28 @@ document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];if(
 document.querySelector('#exportAddresses').onclick=()=>{const collections={};let exported=0;for(const wallet of wallets){const address=String(wallet.address||'').trim();if(!address)continue;if(!valid(address))return message(im,'Export impossible, adresse invalide : '+address,false);const collection=String(wallet.collection||'Manuel').trim()||'Manuel',name=String(wallet.label||'Adresse').trim()||'Adresse';if(!collections[collection])collections[collection]={addresses:[],extendedKeys:[],descriptors:[]};collections[collection].addresses.push({address,name,expect:{chain_in:0,chain_out:0,mempool_in:0,mempool_out:0},alerted:{chain_in:false,chain_out:false,mempool_in:false,mempool_out:false},trackWebsocket:false,monitor:{chain_in:'auto-accept',chain_out:'alert',mempool_in:'auto-accept',mempool_out:'alert'},queued:false,actual:{chain_in:0,chain_out:0,mempool_in:0,mempool_out:0},error:false,errorMessage:null});exported++}if(!exported)return message(im,'Aucune adresse à exporter.',false);const date=new Date().toISOString().slice(0,10);downloadJSON('btc-watch-adresses-'+date+'.json',{collections});message(im,exported+' adresse(s) exportée(s) au format Bitwatch.')};
 const scan=document.querySelector('#scan'),wifiList=document.querySelector('#wifiList'),ssid=document.querySelector('#ssid');let wifiScanning=false;async function scanWifi(){if(!wifiScanning){wifiScanning=true;scan.disabled=true;scan.textContent='Recherche en cours...'}try{const r=await fetch('/wifi-scan');if(r.status===202){setTimeout(scanWifi,350);return}if(!r.ok)throw Error('Recherche impossible');const networks=await r.json();wifiList.innerHTML='<option value="">Choisir un réseau détecté</option>'+networks.map(n=>`<option value="${esc(n.ssid)}">${esc(n.ssid)} (${n.rssi} dBm)${n.secure?' - sécurisé':''}</option>`).join('');wifiList.style.display='block';scan.textContent=networks.length+' réseau(x) détecté(s)'}catch(e){scan.textContent='Relancer la recherche'}wifiScanning=false;scan.disabled=false}scan.onclick=()=>{if(!wifiScanning)scanWifi()};wifiList.onchange=()=>{if(wifiList.value)ssid.value=wifiList.value};setTimeout(scanWifi,600);
 const staticIpEnabled=document.querySelector('#staticIpEnabled'),staticIpFields=[...document.querySelectorAll('.static-ip-field')];function updateStaticIpFields(){for(const field of staticIpFields){field.readOnly=!staticIpEnabled.checked;field.style.opacity=staticIpEnabled.checked?'1':'.55'}}staticIpEnabled.onchange=updateStaticIpFields;updateStaticIpFields();
-const bgCanvas=document.querySelector('#clockBgPreview'),bgCtx=bgCanvas.getContext('2d',{willReadFrequently:true}),bgFile=document.querySelector('#clockBgFile'),bgDelete=document.querySelector('#clockBgDelete'),bgStatus=document.querySelector('#clockBgStatus'),bgMsg=document.querySelector('#clockBgMsg');
-function emptyClockBackground(){bgCtx.fillStyle='#000';bgCtx.fillRect(0,0,320,240);bgCtx.fillStyle='#777';bgCtx.font='14px system-ui';bgCtx.textAlign='center';bgCtx.fillText('AUCUNE IMAGE',160,120)}
-function showRGB565(bytes){if(bytes.length!==153600)throw Error('Format RGB565 incorrect');const image=bgCtx.createImageData(320,240),p=image.data;for(let i=0,j=0;i<bytes.length;i+=2,j+=4){const v=bytes[i]|(bytes[i+1]<<8);p[j]=Math.round(((v>>11)&31)*255/31);p[j+1]=Math.round(((v>>5)&63)*255/63);p[j+2]=Math.round((v&31)*255/31);p[j+3]=255}bgCtx.putImageData(image,0,0)}
-async function loadClockBackground(){if(!hasClockBackground){emptyClockBackground();return}try{const r=await fetch('/clock-background?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error('Fond indisponible');showRGB565(new Uint8Array(await r.arrayBuffer()))}catch(e){emptyClockBackground();message(bgMsg,e.message,false)}}
-function canvasToRGB565(){const rgba=bgCtx.getImageData(0,0,320,240).data,out=new Uint8Array(153600);for(let i=0,j=0;i<rgba.length;i+=4,j+=2){const v=((rgba[i]>>3)<<11)|((rgba[i+1]>>2)<<5)|(rgba[i+2]>>3);out[j]=v&255;out[j+1]=v>>8}return out}
-bgFile.onchange=async e=>{const file=e.target.files[0];if(!file)return;bgMsg.style.display='none';try{const image=await createImageBitmap(file);const scale=Math.max(320/image.width,240/image.height),w=image.width*scale,h=image.height*scale;bgCtx.fillStyle='#000';bgCtx.fillRect(0,0,320,240);bgCtx.drawImage(image,(320-w)/2,(240-h)/2,w,h);image.close?.();const converted=canvasToRGB565(),body=new FormData();body.append('background',new Blob([converted],{type:'application/octet-stream'}),'clock_bg.rgb565');bgFile.disabled=true;bgDelete.disabled=true;bgStatus.textContent='Conversion et envoi en cours...';const r=await fetch('/clock-background',{method:'POST',body});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Envoi impossible');hasClockBackground=true;bgDelete.disabled=false;bgStatus.textContent='Image convertie en RGB565 320 × 240 et enregistrée.';message(bgMsg,'Nouveau fond appliqué sur le cadran Heure.')}catch(err){message(bgMsg,'Image impossible : '+err.message,false);await loadClockBackground()}finally{bgFile.disabled=false;e.target.value=''}};
-bgDelete.onclick=async()=>{if(!confirm("Supprimer l'image de fond personnalisée ?"))return;bgDelete.disabled=true;try{const r=await fetch('/clock-background/delete',{method:'POST'});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Suppression impossible');hasClockBackground=false;emptyClockBackground();bgStatus.textContent='Aucune image enregistrée. La couleur de fond est utilisée.';message(bgMsg,'Image de fond supprimée.')}catch(err){message(bgMsg,err.message,false);bgDelete.disabled=false}};loadClockBackground();
+const gallery=document.querySelector('#gallery'),bgMsg=document.querySelector('#clockBgMsg'),bgSpace=document.querySelector('#bgSpace'),slideCount=document.querySelector('#slideCount'),slideMaskInput=document.querySelector('#slideshowMask'),noBackground=document.querySelector('input[name=clock_background_slot][value="255"]');let bgSlots=[],bgStamp=Date.now();
+const kb=n=>Math.round(Number(n||0)/1024)+' Ko';
+function updateBgSummary(){slideMaskInput.value=bgMask;const n=bgSlots.filter((s,i)=>s&&s.present&&(bgMask&(1<<i))).length;slideCount.textContent=n>1?n+' images sélectionnées pour le défilement.':n?'1 image sélectionnée : cochez-en au moins deux pour le défilement.':'Aucune image sélectionnée pour le défilement.'}
+function renderGallery(){noBackground.checked=bgDefault===255;gallery.innerHTML=Array.from({length:MAXBG},(_,i)=>{const s=bgSlots[i]||{},present=!!s.present,isDefault=bgDefault===i,inShow=!!(bgMask&(1<<i));return `<div class="slot${isDefault?' default':''}"><div class="slot-top"><b>Image ${i+1}</b><span>${present?kb(s.bytes):'Vide'}</span></div>${present?`<img src="/clock-background?slot=${i}&ts=${bgStamp}" alt="Image ${i+1}" loading="lazy">`:'<div class="ph">AUCUNE IMAGE</div>'}<label class="checkline"><input type="radio" name="clock_background_slot" value="${i}"${isDefault?' checked':''}${present||isDefault?'':' disabled'}>Par défaut</label><label class="checkline"><input type="checkbox" data-show="${i}"${inShow?' checked':''}${present?'':' disabled'}>Diaporama</label><div class="slot-actions"><label class="btn primary file">${present?'Remplacer':'Ajouter'}<input type="file" data-upload="${i}" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="btn danger" type="button" data-delete="${i}"${present?'':' disabled'}>Supprimer</button></div></div>`}).join('');updateBgSummary()}
+function applyBgStatus(j){if(!j||!Array.isArray(j.slots))throw Error('Réponse de la galerie illisible');bgSlots=j.slots;bgStamp=Date.now();bgSpace.textContent='Stockage utilisé : '+kb(j.used)+' / '+kb(j.total);renderGallery();return j}
+async function loadBgStatus(){const r=await fetch('/clock-backgrounds?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error('Galerie indisponible');return applyBgStatus(await r.json())}
+function newCanvas(){const c=document.createElement('canvas');c.width=320;c.height=240;return c}
+async function canvasToJpeg(c){for(const q of [.88,.8,.72,.64,.55,.45,.35]){const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));if(blob&&blob.size<=MAXJPEG)return blob}throw Error('image trop détaillée pour être compressée')}
+async function fileToJpeg(file){const image=await createImageBitmap(file),c=newCanvas(),ctx=c.getContext('2d'),scale=Math.max(320/image.width,240/image.height),w=image.width*scale,h=image.height*scale;ctx.fillStyle='#000';ctx.fillRect(0,0,320,240);ctx.drawImage(image,(320-w)/2,(240-h)/2,w,h);image.close?.();return canvasToJpeg(c)}
+function rgb565ToCanvas(bytes){if(bytes.length!==153600)throw Error('Format RGB565 incorrect');const c=newCanvas(),ctx=c.getContext('2d'),image=ctx.createImageData(320,240),p=image.data;for(let i=0,j=0;i<bytes.length;i+=2,j+=4){const v=bytes[i]|(bytes[i+1]<<8);p[j]=Math.round(((v>>11)&31)*255/31);p[j+1]=Math.round(((v>>5)&63)*255/63);p[j+2]=Math.round((v&31)*255/31);p[j+3]=255}ctx.putImageData(image,0,0);return c}
+async function uploadBackground(slot,blob){const body=new FormData();body.append('background',blob,'clock_bg.jpg');const r=await fetch('/clock-background?slot='+slot,{method:'POST',body});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Envoi impossible');return applyBgStatus(j)}
+async function deleteBackground(slot){const r=await fetch('/clock-background/delete'+(slot===undefined?'':'?slot='+slot),{method:'POST'});const j=await r.json().catch(()=>({message:'Réponse illisible'}));if(!r.ok)throw Error(j.message||'Suppression impossible');return applyBgStatus(j)}
+function setGalleryBusy(busy){gallery.style.pointerEvents=busy?'none':'';gallery.style.opacity=busy?'.55':''}
+noBackground.onchange=()=>{if(noBackground.checked){bgDefault=255;renderGallery()}};
+gallery.onchange=async e=>{const t=e.target;if(t.name==='clock_background_slot'){bgDefault=Number(t.value);renderGallery();return}if(t.dataset.show!==undefined){const bit=1<<Number(t.dataset.show);bgMask=t.checked?bgMask|bit:bgMask&~bit;updateBgSummary();return}if(t.dataset.upload===undefined)return;const slot=Number(t.dataset.upload),file=t.files[0];if(!file)return;bgMsg.style.display='none';setGalleryBusy(true);try{const blob=await fileToJpeg(file);const previousDefault=bgDefault;await uploadBackground(slot,blob);let text='Image '+(slot+1)+' enregistrée ('+kb(blob.size)+').';if(previousDefault!==255&&!bgSlots[previousDefault]?.present){bgDefault=slot;renderGallery();text+=' Elle est choisie par défaut : cliquez sur Enregistrer pour confirmer.'}message(bgMsg,text)}catch(err){message(bgMsg,'Image impossible : '+err.message,false)}finally{setGalleryBusy(false)}};
+gallery.onclick=async e=>{const slot=e.target.dataset.delete;if(slot===undefined)return;if(!confirm("Supprimer l'image "+(Number(slot)+1)+' ?'))return;bgMsg.style.display='none';setGalleryBusy(true);try{await deleteBackground(Number(slot));message(bgMsg,'Image '+(Number(slot)+1)+' supprimée.')}catch(err){message(bgMsg,err.message,false)}finally{setGalleryBusy(false)}};
+async function migrateLegacyBackground(status){if(!status||!status.legacy)return;const free=bgSlots.findIndex(s=>!s.present);if(free<0)return;try{const r=await fetch('/clock-background?ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error('ancienne image illisible');const blob=await canvasToJpeg(rgb565ToCanvas(new Uint8Array(await r.arrayBuffer())));await uploadBackground(free,blob);await deleteBackground();message(bgMsg,"Votre ancienne image de fond a été ajoutée à la galerie (image "+(free+1)+').')}catch(err){message(bgMsg,"Conversion de l'ancienne image impossible : "+err.message,false)}}
+renderGallery();loadBgStatus().then(migrateLegacyBackground).catch(err=>message(bgMsg,err.message,false));
 const f=document.querySelector('#settings'),b=document.querySelector('#brightness'),bv=document.querySelector('#bv'),backupExport=document.querySelector('#backupExport'),backupFile=document.querySelector('#backupFile'),backupMsg=document.querySelector('#backupMsg');
-function mergeVisibleConfiguration(config){const form=new FormData(f);config.ssid=String(form.get('ssid')||'');if(form.get('pass'))config.pass=String(form.get('pass'));if(form.get('new_password'))config.ap_password=String(form.get('new_password'));config.static_ip_enabled=form.has('static_ip_enabled');config.static_ip=String(form.get('static_ip')||config.static_ip);config.static_gateway=String(form.get('static_gateway')||config.static_gateway);config.static_subnet=String(form.get('static_subnet')||config.static_subnet);config.static_dns=String(form.get('static_dns')||config.static_dns);config.tz=String(form.get('tz')||config.tz);config.price_api=String(form.get('price_api')||config.price_api);config.clock_color=String(form.get('clock_color')||config.clock_color);config.clock_background=String(form.get('clock_background')||config.clock_background);config.clock_title=String(form.get('clock_title')??config.clock_title);config.clock_subtitle=String(form.get('clock_subtitle')??config.clock_subtitle);config.clock_title_color=String(form.get('clock_title_color')||config.clock_title_color);config.clock_subtitle_color=String(form.get('clock_subtitle_color')||config.clock_subtitle_color);config.clock_bar_color=String(form.get('clock_bar_color')||config.clock_bar_color);config.clock_button_color=String(form.get('clock_button_color')||config.clock_button_color);config.clock_bar_same_as_time=form.has('clock_bar_same');config.clock_button_same_as_time=form.has('clock_button_same');config.clock_bar_visible=form.has('clock_bar_visible');config.clock_outline_visible=form.has('clock_outline_visible');config.brightness=Number(form.get('brightness')||config.brightness);config.wallets=wallets.filter(w=>String(w.address||'').trim()).map(w=>({collection:String(w.collection||'Manuel').trim().slice(0,18)||'Manuel',label:String(w.label||'Adresse').trim().slice(0,18)||'Adresse',address:String(w.address).trim()}));return config}
-backupExport.onclick=async()=>{backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const configResponse=await fetch('/configuration?ts='+Date.now(),{cache:'no-store'});if(!configResponse.ok)throw Error('Configuration indisponible');const configuration=mergeVisibleConfiguration(await configResponse.json());let clock_background={present:false};if(hasClockBackground){const backgroundResponse=await fetch('/clock-background?ts='+Date.now(),{cache:'no-store'});if(!backgroundResponse.ok)throw Error("L'image de fond est indisponible");const bytes=new Uint8Array(await backgroundResponse.arrayBuffer());if(bytes.length!==153600)throw Error("L'image de fond est invalide");clock_background={present:true,encoding:'base64',format:'rgb565-le',width:320,height:240,data:bytesToBase64(bytes)}}const backup={format:'btc-watch-complete-backup',schema_version:1,app_version:APP_VERSION,exported_at:new Date().toISOString(),configuration,clock_background};const date=new Date().toISOString().slice(0,10);downloadJSON('btc-watch-sauvegarde-'+date+'.json',backup);message(backupMsg,'Sauvegarde complète téléchargée. Conservez-la dans un endroit privé.')}catch(err){message(backupMsg,'Sauvegarde impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false}};
-backupFile.onchange=async e=>{const file=e.target.files[0];if(!file)return;backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const backup=JSON.parse(await file.text()),required=['ssid','pass','ap_password','tz','currency','price_api','clock_color','clock_background','clock_title','clock_subtitle','clock_title_color','clock_subtitle_color','clock_bar_color','clock_button_color','clock_bar_same_as_time','clock_button_same_as_time','clock_bar_visible','clock_outline_visible','brightness','wallets'];if(backup.format!=='btc-watch-complete-backup'||backup.schema_version!==1||!backup.configuration||!backup.clock_background)throw Error('Ce fichier n’est pas une sauvegarde BTC Watch compatible');const missing=required.filter(key=>!Object.prototype.hasOwnProperty.call(backup.configuration,key));if(missing.length)throw Error('Réglages manquants : '+missing.join(', '));if(!confirm('Restaurer toute cette configuration ? Les réglages, adresses, mots de passe et image actuels seront remplacés.'))return;if(backup.clock_background.present){if(backup.clock_background.encoding!=='base64'||backup.clock_background.format!=='rgb565-le'||backup.clock_background.width!==320||backup.clock_background.height!==240)throw Error("Format d'image non compatible");const bytes=base64ToBytes(String(backup.clock_background.data||''));if(bytes.length!==153600)throw Error("Données de l'image incomplètes");const imageBody=new FormData();imageBody.append('background',new Blob([bytes],{type:'application/octet-stream'}),'clock_bg.rgb565');const imageResponse=await fetch('/clock-background',{method:'POST',body:imageBody});if(!imageResponse.ok){const problem=await imageResponse.json().catch(()=>({}));throw Error(problem.message||"Restauration de l'image impossible")}hasClockBackground=true}else{const deleteResponse=await fetch('/clock-background/delete',{method:'POST'});if(!deleteResponse.ok)throw Error("Suppression de l'ancien fond impossible");hasClockBackground=false}const body=new FormData();body.set('config_json',JSON.stringify(backup.configuration));const response=await fetch('/configuration/import',{method:'POST',body});const result=await response.json().catch(()=>({message:'Réponse illisible'}));if(!response.ok)throw Error(result.message||'Restauration impossible');message(backupMsg,'Configuration complète restaurée. BTC Watch redémarre pour tout réappliquer.');setTimeout(()=>location.reload(),7000)}catch(err){message(backupMsg,'Import impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false;e.target.value=''}};
+function mergeVisibleConfiguration(config){const form=new FormData(f);config.ssid=String(form.get('ssid')||'');if(form.get('pass'))config.pass=String(form.get('pass'));if(form.get('new_password'))config.ap_password=String(form.get('new_password'));config.static_ip_enabled=form.has('static_ip_enabled');config.static_ip=String(form.get('static_ip')||config.static_ip);config.static_gateway=String(form.get('static_gateway')||config.static_gateway);config.static_subnet=String(form.get('static_subnet')||config.static_subnet);config.static_dns=String(form.get('static_dns')||config.static_dns);config.tz=String(form.get('tz')||config.tz);config.price_api=String(form.get('price_api')||config.price_api);config.clock_color=String(form.get('clock_color')||config.clock_color);config.clock_background=String(form.get('clock_background')||config.clock_background);config.clock_title=String(form.get('clock_title')??config.clock_title);config.clock_subtitle=String(form.get('clock_subtitle')??config.clock_subtitle);config.clock_title_color=String(form.get('clock_title_color')||config.clock_title_color);config.clock_subtitle_color=String(form.get('clock_subtitle_color')||config.clock_subtitle_color);config.clock_bar_color=String(form.get('clock_bar_color')||config.clock_bar_color);config.clock_button_color=String(form.get('clock_button_color')||config.clock_button_color);config.clock_bar_same_as_time=form.has('clock_bar_same');config.clock_button_same_as_time=form.has('clock_button_same');config.clock_bar_visible=form.has('clock_bar_visible');config.clock_outline_visible=form.has('clock_outline_visible');config.clock_background_slot=bgDefault;config.clock_slideshow_enabled=form.has('clock_slideshow_enabled');config.clock_slideshow_mask=bgMask;config.clock_slideshow_seconds=Number(form.get('clock_slideshow_seconds')||config.clock_slideshow_seconds);config.brightness=Number(form.get('brightness')||config.brightness);config.wallets=wallets.filter(w=>String(w.address||'').trim()).map(w=>({collection:String(w.collection||'Manuel').trim().slice(0,18)||'Manuel',label:String(w.label||'Adresse').trim().slice(0,18)||'Adresse',address:String(w.address).trim()}));return config}
+backupExport.onclick=async()=>{backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const configResponse=await fetch('/configuration?ts='+Date.now(),{cache:'no-store'});if(!configResponse.ok)throw Error('Configuration indisponible');const configuration=mergeVisibleConfiguration(await configResponse.json());await loadBgStatus();const clock_backgrounds=[];for(const s of bgSlots){if(!s.present)continue;const r=await fetch('/clock-background?slot='+s.slot+'&ts='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error("L'image "+(s.slot+1)+' est indisponible');clock_backgrounds.push({slot:s.slot,format:'jpeg',encoding:'base64',data:bytesToBase64(new Uint8Array(await r.arrayBuffer()))})}const backup={format:'btc-watch-complete-backup',schema_version:2,app_version:APP_VERSION,exported_at:new Date().toISOString(),configuration,clock_backgrounds};const date=new Date().toISOString().slice(0,10);downloadJSON('btc-watch-sauvegarde-'+date+'.json',backup);message(backupMsg,'Sauvegarde complète téléchargée ('+clock_backgrounds.length+' image(s) de fond). Conservez-la dans un endroit privé.')}catch(err){message(backupMsg,'Sauvegarde impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false}};
+backupFile.onchange=async e=>{const file=e.target.files[0];if(!file)return;backupExport.disabled=true;backupFile.disabled=true;backupMsg.style.display='none';try{const backup=JSON.parse(await file.text()),required=['ssid','pass','ap_password','tz','currency','price_api','clock_color','clock_background','clock_title','clock_subtitle','clock_title_color','clock_subtitle_color','clock_bar_color','clock_button_color','clock_bar_same_as_time','clock_button_same_as_time','clock_bar_visible','clock_outline_visible','brightness','wallets'],incompatible='Ce fichier n’est pas une sauvegarde BTC Watch compatible';if(backup.format!=='btc-watch-complete-backup'||![1,2].includes(backup.schema_version)||!backup.configuration)throw Error(incompatible);const missing=required.filter(key=>!Object.prototype.hasOwnProperty.call(backup.configuration,key));if(missing.length)throw Error('Réglages manquants : '+missing.join(', '));const images=[];if(backup.schema_version===1){const old=backup.clock_background;if(!old)throw Error(incompatible);if(old.present){if(old.encoding!=='base64'||old.format!=='rgb565-le'||old.width!==320||old.height!==240)throw Error("Format d'image non compatible");images.push({slot:0,blob:await canvasToJpeg(rgb565ToCanvas(base64ToBytes(String(old.data||''))))})}}else{if(!Array.isArray(backup.clock_backgrounds))throw Error(incompatible);for(const item of backup.clock_backgrounds){const slot=Number(item.slot);if(!Number.isInteger(slot)||slot<0||slot>=MAXBG||item.format!=='jpeg'||item.encoding!=='base64'||images.some(i=>i.slot===slot))throw Error("Image de fond non compatible");images.push({slot,blob:new Blob([base64ToBytes(String(item.data||''))],{type:'image/jpeg'})})}}if(!confirm('Restaurer toute cette configuration ? Les réglages, adresses, mots de passe et images actuels seront remplacés.'))return;await loadBgStatus();for(let slot=0;slot<MAXBG;slot++)if(bgSlots[slot]?.present&&!images.some(i=>i.slot===slot))await deleteBackground(slot);for(const image of images){try{await uploadBackground(image.slot,image.blob)}catch(err){throw Error("Restauration de l'image "+(image.slot+1)+' impossible : '+err.message)}}await deleteBackground();const body=new FormData();body.set('config_json',JSON.stringify(backup.configuration));const response=await fetch('/configuration/import',{method:'POST',body});const result=await response.json().catch(()=>({message:'Réponse illisible'}));if(!response.ok)throw Error(result.message||'Restauration impossible');message(backupMsg,'Configuration complète restaurée. BTC Watch redémarre pour tout réappliquer.');setTimeout(()=>location.reload(),7000)}catch(err){message(backupMsg,'Import impossible : '+err.message,false)}finally{backupExport.disabled=false;backupFile.disabled=false;e.target.value=''}};
 b.oninput=()=>bv.textContent=b.value;f.onsubmit=async e=>{e.preventDefault();sm.style.display='none';const currentPassword=f.elements.current_password.value,newPassword=f.elements.new_password.value,confirmPassword=f.elements.confirm_password.value,passwordChange=currentPassword||newPassword||confirmPassword;if(passwordChange){if(!currentPassword||!newPassword||!confirmPassword)return message(sm,'Remplissez les trois champs du mot de passe.',false);if(newPassword.length<8||newPassword.length>63)return message(sm,'Le nouveau mot de passe doit contenir entre 8 et 63 caractères.',false);if(newPassword!==confirmPassword)return message(sm,'Les deux nouveaux mots de passe ne correspondent pas.',false)}const cleaned=[];const seen=new Set();for(const w of wallets){w.collection=String(w.collection||'Manuel').trim().slice(0,18)||'Manuel';w.label=String(w.label||'Adresse').trim().slice(0,18)||'Adresse';w.address=String(w.address||'').trim();if(!w.address)continue;if(!valid(w.address))return message(sm,'Adresse invalide : '+w.address,false);const k=key(w.address);if(seen.has(k))continue;seen.add(k);cleaned.push(w)}wallets.splice(0,wallets.length,...cleaned);const body=new FormData(f);body.set('wallets_json',JSON.stringify(wallets));const r=await fetch('/save',{method:'POST',body});const j=await r.json().catch(()=>({message:'Reponse illisible'}));if(r.ok){render();if(passwordChange){f.elements.current_password.value='';f.elements.new_password.value='';f.elements.confirm_password.value=''}message(sm,j.saved+' adresse(s) enregistree(s).')}else message(sm,j.message||'Enregistrement impossible.',false)};document.querySelector('#reboot').onclick=()=>fetch('/reboot',{method:'POST'});render();
 </script></body></html>)HTML");
   return page;

@@ -3,6 +3,7 @@
 #include "config.h"
 #include <FS.h>
 #include <SPIFFS.h>
+#include <TJpg_Decoder.h>
 #include <WiFi.h>
 #include <math.h>
 
@@ -18,6 +19,50 @@ constexpr uint16_t C_ORANGE_DARK = 0xA301;
 constexpr uint16_t C_GREEN = 0x3E8E;
 constexpr uint16_t C_RED = 0xF9E7;
 const char *NAV_LABELS[] = {"TOTAL", "ADRESSES", "HEURE", "MARCHE", "RESEAU"};
+
+// Destination du decodage JPEG en cours : une zone de l'ecran, ou le sprite
+// de l'heure lorsque sprite n'est pas nul (coordonnees relatives a x, y).
+struct JpegTarget {
+  TFT_eSPI *tft = nullptr;
+  TFT_eSprite *sprite = nullptr;
+  int16_t x = 0;
+  int16_t y = 0;
+  int16_t w = 0;
+  int16_t h = 0;
+};
+JpegTarget jpegTarget;
+
+bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
+                uint16_t *bitmap) {
+  const JpegTarget &target = jpegTarget;
+  // Les blocs arrivent ligne par ligne : au-dela de la zone, le reste de
+  // l'image est inutile et le decodage s'arrete.
+  if (y >= target.y + target.h) return false;
+  const int16_t left = max<int16_t>(x, target.x);
+  const int16_t top = max<int16_t>(y, target.y);
+  const int16_t right = min<int16_t>(x + w, target.x + target.w);
+  const int16_t bottom = min<int16_t>(y + h, target.y + target.h);
+  if (left >= right || top >= bottom) return true;
+
+  const int16_t outX = target.sprite ? left - target.x : left;
+  const int16_t outY = target.sprite ? top - target.y : top;
+  uint16_t *first = bitmap + (top - y) * w + (left - x);
+  if (right - left == static_cast<int16_t>(w)) {
+    if (target.sprite)
+      target.sprite->pushImage(outX, outY, w, bottom - top, first);
+    else
+      target.tft->pushImage(outX, outY, w, bottom - top, first);
+    return true;
+  }
+  for (int16_t row = 0; row < bottom - top; ++row) {
+    uint16_t *line = first + row * w;
+    if (target.sprite)
+      target.sprite->pushImage(outX, outY + row, right - left, 1, line);
+    else
+      target.tft->pushImage(outX, outY + row, right - left, 1, line);
+  }
+  return true;
+}
 }
 
 CYDDisplay::CYDDisplay()
@@ -27,7 +72,9 @@ CYDDisplay::CYDDisplay()
       firstRunGuideVisible(false), welcomeScreenVisible(false),
       renderedClockBarUseTimeColor(false),
       renderedClockButtonUseTimeColor(false), renderedClockBarVisible(true),
-      renderedClockOutlineVisible(true) {}
+      renderedClockOutlineVisible(true),
+      activeClockBackgroundSlot(CLOCK_BACKGROUND_NONE),
+      renderedClockBackgroundSlot(CLOCK_BACKGROUND_NONE) {}
 
 void CYDDisplay::begin(uint8_t brightness) {
   pinMode(TFT_BL, OUTPUT);
@@ -53,6 +100,11 @@ void CYDDisplay::setBrightness(uint8_t brightness) {
 }
 
 void CYDDisplay::invalidate() { hasRenderedScreen = false; }
+
+void CYDDisplay::setClockBackgroundSlot(uint8_t slot) {
+  activeClockBackgroundSlot =
+      slot < MAX_CLOCK_BACKGROUNDS ? slot : CLOCK_BACKGROUND_NONE;
+}
 
 void CYDDisplay::drawSplash() {
   welcomeScreenVisible = true;
@@ -693,8 +745,42 @@ void CYDDisplay::drawAddresses(const Settings &settings,
   }
 }
 
+bool CYDDisplay::drawJpegBackgroundRegion(TFT_eSprite *sprite, int16_t x,
+                                          int16_t y, int16_t w, int16_t h) {
+  if (activeClockBackgroundSlot >= MAX_CLOCK_BACKGROUNDS || w <= 0 || h <= 0)
+    return false;
+  const String path = Settings::clockBackgroundPath(activeClockBackgroundSlot);
+  if (!SPIFFS.exists(path)) return false;
+
+  jpegTarget.tft = &tft;
+  jpegTarget.sprite = sprite;
+  jpegTarget.x = x;
+  jpegTarget.y = y;
+  jpegTarget.w = w;
+  jpegTarget.h = h;
+  // TJpgDec fournit deja les pixels dans l'ordre attendu par l'ecran.
+  const bool oldSwapBytes = sprite ? sprite->getSwapBytes() : tft.getSwapBytes();
+  if (sprite)
+    sprite->setSwapBytes(false);
+  else
+    tft.setSwapBytes(false);
+  TJpgDec.setJpgScale(1);
+  TJpgDec.setSwapBytes(true);
+  TJpgDec.setCallback(jpegOutput);
+  const JRESULT result = TJpgDec.drawFsJpg(0, 0, path, SPIFFS);
+  if (sprite)
+    sprite->setSwapBytes(oldSwapBytes);
+  else
+    tft.setSwapBytes(oldSwapBytes);
+  // JDR_INTR signale l'arret volontaire une fois la zone entierement dessinee.
+  return result == JDR_OK || result == JDR_INTR;
+}
+
 bool CYDDisplay::drawClockBackgroundRegion(int16_t x, int16_t y, int16_t w,
                                            int16_t h) {
+  if (activeClockBackgroundSlot == CLOCK_BACKGROUND_NONE) return false;
+  if (drawJpegBackgroundRegion(nullptr, x, y, w, h)) return true;
+  // Ancien fond RGB565 unique, tant qu'il n'a pas ete converti en JPEG.
   fs::File file = SPIFFS.open(CLOCK_BACKGROUND_PATH, "r");
   if (!file || file.size() != CLOCK_BACKGROUND_BYTES || w <= 0 || h <= 0 ||
       x < 0 || y < 0 || x + w > DISPLAY_WIDTH || y + h > DISPLAY_HEIGHT) {
@@ -724,6 +810,8 @@ bool CYDDisplay::loadClockBackgroundIntoSprite(int16_t x, int16_t y,
                                                int16_t w, int16_t h) {
   if (!clockSpriteReady || w > clockSprite.width() || h > clockSprite.height())
     return false;
+  if (activeClockBackgroundSlot == CLOCK_BACKGROUND_NONE) return false;
+  if (drawJpegBackgroundRegion(&clockSprite, x, y, w, h)) return true;
   fs::File file = SPIFFS.open(CLOCK_BACKGROUND_PATH, "r");
   if (!file || file.size() != CLOCK_BACKGROUND_BYTES) {
     if (file) file.close();
@@ -956,7 +1044,8 @@ void CYDDisplay::render(UiScreen screen, const Settings &settings,
         settings.clockBarUseTimeColor != renderedClockBarUseTimeColor ||
         settings.clockButtonUseTimeColor != renderedClockButtonUseTimeColor ||
         settings.clockBarVisible != renderedClockBarVisible ||
-        settings.clockOutlineVisible != renderedClockOutlineVisible;
+        settings.clockOutlineVisible != renderedClockOutlineVisible ||
+        activeClockBackgroundSlot != renderedClockBackgroundSlot;
     if (screenChanged || clockSettingsChanged) {
       drawClock(time, settings, wifiConnected);
     } else {
@@ -981,6 +1070,7 @@ void CYDDisplay::render(UiScreen screen, const Settings &settings,
     renderedClockButtonUseTimeColor = settings.clockButtonUseTimeColor;
     renderedClockBarVisible = settings.clockBarVisible;
     renderedClockOutlineVisible = settings.clockOutlineVisible;
+    renderedClockBackgroundSlot = activeClockBackgroundSlot;
   } else {
     if (screenChanged) drawBackground();
     drawHeader(wifiConnected, time);

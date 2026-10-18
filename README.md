@@ -67,7 +67,7 @@ flowchart LR
 - frais du réseau Bitcoin fournis par mempool.space ;
 - cinq écrans tactiles : Total, Adresses, Heure, Marché et Réseau ;
 - horloge personnalisable : couleurs, textes, ligne et bouton ;
-- image de fond envoyée directement depuis le navigateur ;
+- galerie de 10 images de fond et diaporama à durée réglable ;
 - recherche des réseaux Wi-Fi à proximité ;
 - dashboard accessible depuis un téléphone ou un ordinateur ;
 - import et export compatibles avec bitwatch-collections ;
@@ -379,23 +379,40 @@ Il contient notamment :
 - la devise et la source du cours ;
 - les textes et les couleurs de l'horloge ;
 - les options d'affichage ;
-- l'image de fond convertie en RGB565.
+- l'image par défaut et les réglages du diaporama ;
+- les images de fond de la galerie, au format JPEG.
+
+Les sauvegardes des versions précédentes restent importables : leur image
+de fond unique est convertie et placée dans le premier emplacement.
 
 > [!CAUTION]
 > Une sauvegarde complète contient les mots de passe en clair. Conservez-la
 > dans un emplacement privé et ne la publiez jamais dans le dépôt GitHub.
 
-## 🖼️ Image de fond de l'horloge
+## 🖼️ Images de fond et diaporama
 
-Le dashboard accepte une image PNG, JPEG, WebP ou GIF. Le navigateur :
+La section **Cadran Heure et affichage** du dashboard propose une galerie de
+**10 emplacements**. Chaque photo PNG, JPEG, WebP ou GIF est préparée par le
+navigateur :
 
-1. recadre l'image au format 4:3 ;
-2. la redimensionne en 320 × 240 pixels ;
-3. la convertit en RGB565 ;
-4. l'envoie dans la mémoire SPIFFS de l'ESP32.
+1. recadrage au format 4:3 ;
+2. redimensionnement en 320 × 240 pixels ;
+3. compression JPEG (60 Ko au maximum par image) ;
+4. envoi dans la mémoire SPIFFS de l'ESP32.
+
+Pour chaque emplacement, on peut ajouter, remplacer ou supprimer l'image.
+Le bouton **Par défaut** choisit l'image affichée derrière l'horloge, et
+**Aucune image** revient à la seule couleur de fond.
+
+Le **diaporama** fait défiler les images cochées **Diaporama**, avec une durée
+d'affichage de 5 secondes à 1 heure par image. Il ne tourne que sur l'écran
+Heure et commence par l'image par défaut si elle est sélectionnée. L'image par
+défaut et le diaporama s'appliquent après **Enregistrer et actualiser**.
 
 L'heure, les textes, l'état Wi-Fi, la ligne décorative et le bouton de retour
-restent affichés au-dessus de l'image. Le fond peut être remplacé ou supprimé.
+restent affichés au-dessus de l'image. Après une mise à jour depuis une
+version précédente, l'ancienne image de fond est automatiquement ajoutée à la
+galerie à la première ouverture du dashboard.
 
 Un exemple prêt à importer est fourni dans
 [assets/clock-backgrounds/btcWatch.jpg](assets/clock-backgrounds/btcWatch.jpg).
@@ -410,7 +427,7 @@ Cette opération efface :
 - la configuration Wi-Fi ;
 - les adresses enregistrées ;
 - les textes, couleurs et options d'affichage ;
-- l'image de fond ;
+- les images de fond ;
 - le mot de passe personnalisé du réseau BTC Watch.
 
 Le bouton RST effectue uniquement un redémarrage.

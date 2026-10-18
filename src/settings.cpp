@@ -35,6 +35,19 @@ bool validIPv4(const String &value) {
   IPAddress address;
   return address.fromString(value);
 }
+
+constexpr uint16_t CLOCK_SLIDESHOW_ALL_SLOTS =
+    static_cast<uint16_t>((1UL << MAX_CLOCK_BACKGROUNDS) - 1UL);
+
+bool validClockBackgroundSlot(int slot) {
+  return (slot >= 0 && slot < MAX_CLOCK_BACKGROUNDS) ||
+         slot == CLOCK_BACKGROUND_NONE;
+}
+}
+
+bool Settings::clockBackgroundExists(uint8_t slot) {
+  return slot < MAX_CLOCK_BACKGROUNDS &&
+         SPIFFS.exists(clockBackgroundPath(slot));
 }
 
 Settings::Settings()
@@ -55,7 +68,10 @@ Settings::Settings()
       clockButtonColor(getDefaultClockButtonColor()),
       clockBarUseTimeColor(true), clockButtonUseTimeColor(true),
       clockBarVisible(getDefaultClockBarVisible()),
-      clockOutlineVisible(getDefaultClockOutlineVisible()), brightness(220) {
+      clockOutlineVisible(getDefaultClockOutlineVisible()),
+      clockBackgroundSlot(0), clockSlideshowEnabled(false),
+      clockSlideshowMask(CLOCK_SLIDESHOW_ALL_SLOTS),
+      clockSlideshowSeconds(CLOCK_SLIDESHOW_DEFAULT_SECONDS), brightness(220) {
   for (uint8_t i = 0; i < MAX_WALLETS; ++i) {
     wallets[i].collection = "Manuel";
     wallets[i].label = "Wallet " + String(i + 1);
@@ -83,6 +99,12 @@ bool Settings::factoryReset() {
     success = SPIFFS.remove(CLOCK_BACKGROUND_PATH) && success;
   if (SPIFFS.exists(CLOCK_BACKGROUND_TEMP_PATH))
     success = SPIFFS.remove(CLOCK_BACKGROUND_TEMP_PATH) && success;
+  if (SPIFFS.exists(CLOCK_BACKGROUND_JPEG_TEMP_PATH))
+    success = SPIFFS.remove(CLOCK_BACKGROUND_JPEG_TEMP_PATH) && success;
+  for (uint8_t slot = 0; slot < MAX_CLOCK_BACKGROUNDS; ++slot) {
+    const String path = clockBackgroundPath(slot);
+    if (SPIFFS.exists(path)) success = SPIFFS.remove(path) && success;
+  }
   return success;
 }
 
@@ -139,6 +161,18 @@ void Settings::load() {
     clockBarVisible = doc["clock_bar_visible"] | clockBarVisible;
     clockOutlineVisible =
         doc["clock_outline_visible"] | clockOutlineVisible;
+    const int backgroundSlot =
+        doc["clock_background_slot"] | static_cast<int>(clockBackgroundSlot);
+    if (validClockBackgroundSlot(backgroundSlot))
+      clockBackgroundSlot = static_cast<uint8_t>(backgroundSlot);
+    clockSlideshowEnabled =
+        doc["clock_slideshow_enabled"] | clockSlideshowEnabled;
+    clockSlideshowMask = static_cast<uint16_t>(
+        (doc["clock_slideshow_mask"] | static_cast<int>(clockSlideshowMask)) &
+        CLOCK_SLIDESHOW_ALL_SLOTS);
+    clockSlideshowSeconds = constrain(
+        doc["clock_slideshow_seconds"] | static_cast<int>(clockSlideshowSeconds),
+        CLOCK_SLIDESHOW_MIN_SECONDS, CLOCK_SLIDESHOW_MAX_SECONDS);
     brightness = constrain(doc["brightness"] | brightness, 30, 255);
 
     JsonArray list = doc["wallets"].as<JsonArray>();
@@ -183,6 +217,10 @@ void Settings::save() {
   doc["clock_button_same_as_time"] = clockButtonUseTimeColor;
   doc["clock_bar_visible"] = clockBarVisible;
   doc["clock_outline_visible"] = clockOutlineVisible;
+  doc["clock_background_slot"] = clockBackgroundSlot;
+  doc["clock_slideshow_enabled"] = clockSlideshowEnabled;
+  doc["clock_slideshow_mask"] = clockSlideshowMask;
+  doc["clock_slideshow_seconds"] = clockSlideshowSeconds;
   doc["brightness"] = brightness;
 
   JsonArray list = doc["wallets"].to<JsonArray>();
@@ -244,6 +282,33 @@ bool Settings::restoreFromJson(const String &json, String &errorMessage) {
       doc["clock_outline_visible"] | restored.clockOutlineVisible;
   restored.brightness = constrain(doc["brightness"] | restored.brightness,
                                   30, 255);
+  // Champs de la galerie facultatifs : une sauvegarde d'une version
+  // precedente garde les valeurs par defaut.
+  const int backgroundSlot = doc["clock_background_slot"] |
+                             static_cast<int>(restored.clockBackgroundSlot);
+  restored.clockSlideshowEnabled =
+      doc["clock_slideshow_enabled"] | restored.clockSlideshowEnabled;
+  const long slideshowMask = doc["clock_slideshow_mask"] |
+                             static_cast<long>(restored.clockSlideshowMask);
+  const long slideshowSeconds =
+      doc["clock_slideshow_seconds"] |
+      static_cast<long>(restored.clockSlideshowSeconds);
+  if (!validClockBackgroundSlot(backgroundSlot)) {
+    errorMessage = "Image de fond par defaut invalide";
+    return false;
+  }
+  if (slideshowMask < 0 || slideshowMask > CLOCK_SLIDESHOW_ALL_SLOTS) {
+    errorMessage = "Selection du diaporama invalide";
+    return false;
+  }
+  if (slideshowSeconds < CLOCK_SLIDESHOW_MIN_SECONDS ||
+      slideshowSeconds > CLOCK_SLIDESHOW_MAX_SECONDS) {
+    errorMessage = "Duree du diaporama invalide";
+    return false;
+  }
+  restored.clockBackgroundSlot = static_cast<uint8_t>(backgroundSlot);
+  restored.clockSlideshowMask = static_cast<uint16_t>(slideshowMask);
+  restored.clockSlideshowSeconds = static_cast<uint16_t>(slideshowSeconds);
 
   if (restored.wifiSSID.length() > 32 || restored.wifiPASS.length() > 64) {
     errorMessage = "Identifiants Wi-Fi invalides";

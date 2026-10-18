@@ -10,6 +10,16 @@
 #define CLOCK_BACKGROUND_TEMP_PATH "/clock_bg.tmp"
 #define CLOCK_BACKGROUND_BYTES (DISPLAY_WIDTH * DISPLAY_HEIGHT * 2UL)
 
+// Galerie de fonds JPEG 320 x 240 pour l'horloge. L'ancien fichier RGB565
+// unique reste lu tant qu'il n'a pas ete converti par le panneau web.
+#define MAX_CLOCK_BACKGROUNDS 10
+#define CLOCK_BACKGROUND_NONE 255
+#define CLOCK_BACKGROUND_MAX_JPEG_BYTES 61440UL
+#define CLOCK_BACKGROUND_JPEG_TEMP_PATH "/bg_upload.tmp"
+#define CLOCK_SLIDESHOW_MIN_SECONDS 5
+#define CLOCK_SLIDESHOW_MAX_SECONDS 3600
+#define CLOCK_SLIDESHOW_DEFAULT_SECONDS 30
+
 // XPT2046 touch controller (dedicated SPI bus)
 #define TOUCH_IRQ 36
 #define TOUCH_MOSI 32

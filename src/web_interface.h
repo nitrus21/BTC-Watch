@@ -23,7 +23,10 @@ private:
   String sessionToken;
   fs::File clockBackgroundUpload;
   size_t clockBackgroundUploadBytes;
+  size_t clockBackgroundUploadLimit;
   bool clockBackgroundUploadOK;
+  uint8_t clockBackgroundUploadSlot;
+  String clockBackgroundUploadError;
 
   String generateHTML();
   String generateLoginHTML(bool invalidPassword = false);
@@ -41,6 +44,9 @@ private:
   void handleClockBackgroundUpload();
   void handleClockBackgroundUploadComplete();
   void handleClockBackgroundDelete();
+  void handleClockBackgroundStatus();
+  String clockBackgroundStatusJson();
+  bool requestedClockBackgroundSlot(uint8_t &slot);
   void handleConfigurationExport();
   void handleConfigurationImport();
 };

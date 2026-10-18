@@ -54,6 +54,10 @@ public:
                                     uint8_t column);
   void moveAddressPage(int8_t delta, uint8_t walletCount);
   void updateHeader(bool wifiConnected, const String &time);
+  // Emplacement JPEG dessine derriere l'horloge (CLOCK_BACKGROUND_NONE pour
+  // la couleur seule). Un changement force le redessin complet du cadran.
+  void setClockBackgroundSlot(uint8_t slot);
+  uint8_t clockBackgroundSlot() const { return activeClockBackgroundSlot; }
 
 private:
   TFT_eSPI tft;
@@ -80,6 +84,8 @@ private:
   bool renderedClockButtonUseTimeColor;
   bool renderedClockBarVisible;
   bool renderedClockOutlineVisible;
+  uint8_t activeClockBackgroundSlot;
+  uint8_t renderedClockBackgroundSlot;
 
   void drawBackground();
   void drawHeader(bool wifiConnected, const String &time);
@@ -94,6 +100,8 @@ private:
   bool drawClockBackgroundRegion(int16_t x, int16_t y, int16_t w, int16_t h);
   bool loadClockBackgroundIntoSprite(int16_t x, int16_t y, int16_t w,
                                      int16_t h);
+  bool drawJpegBackgroundRegion(TFT_eSprite *sprite, int16_t x, int16_t y,
+                                int16_t w, int16_t h);
   void drawMarket(const AddressMonitor &monitor, float btcPrice,
                   float priceChange, const String &currency, bool loading);
   void drawNetwork(int low, int medium, int high, bool wifiConnected);

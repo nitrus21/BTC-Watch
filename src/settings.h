@@ -35,6 +35,13 @@ public:
   bool clockButtonUseTimeColor;
   bool clockBarVisible;
   bool clockOutlineVisible;
+  // Image affichee par defaut (0 a MAX_CLOCK_BACKGROUNDS - 1) ou
+  // CLOCK_BACKGROUND_NONE pour la seule couleur de fond.
+  uint8_t clockBackgroundSlot;
+  bool clockSlideshowEnabled;
+  // Un bit par emplacement : bit n = image n incluse dans le diaporama.
+  uint16_t clockSlideshowMask;
+  uint16_t clockSlideshowSeconds;
   uint8_t brightness;
   WalletSetting wallets[MAX_WALLETS];
 
@@ -59,6 +66,10 @@ public:
   static String getDefaultClockButtonColor() { return "#F7931A"; }
   static bool getDefaultClockBarVisible() { return true; }
   static bool getDefaultClockOutlineVisible() { return true; }
+  static String clockBackgroundPath(uint8_t slot) {
+    return "/bg" + String(slot) + ".jpg";
+  }
+  static bool clockBackgroundExists(uint8_t slot);
   static String getDefaultAPPassword() { return DEFAULT_AP_PASS; }
   static bool getDefaultStaticIPEnabled() { return true; }
   static String getDefaultStaticIP() { return DEFAULT_STATIC_IP; }
