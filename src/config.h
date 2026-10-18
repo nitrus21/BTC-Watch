@@ -54,6 +54,6 @@
 
 #define MAX_WALLETS 64
 #define WALLETS_PER_PAGE 4
-#define APP_VERSION "0.9.9"
+#define APP_VERSION "1.0.0"
 
 #endif

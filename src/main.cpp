@@ -623,7 +623,9 @@ void setup() {
   webInterface = new WebInterface(&settings, &network);
   webInterface->begin();
 
-  // L'accueil reste affiche jusqu'a l'appui sur le bouton DEMARRER.
+  // L'accueil reste affiche jusqu'a l'appui sur le bouton DEMARRER, sauf si
+  // le Wi-Fi enregistre se connecte : BTC Watch s'ouvre alors sur l'horloge.
+  bool bootOnClock = false;
   while (true) {
     if (handleFactoryResetButton()) {
       delay(5);
@@ -635,6 +637,10 @@ void setup() {
       display.setBrightness(settings.brightness);
       addressMonitor.sync(settings);
     }
+    if (network.isConnected()) {
+      bootOnClock = true;
+      break;
+    }
     if (display.pollTouch() == TouchAction::StartApplication) break;
     delay(5);
   }
@@ -643,6 +649,7 @@ void setup() {
 
   if (firstRunGuideActive && runFirstRunWifiWizard())
     firstRunGuideActive = false;
+  if (bootOnClock) currentScreen = UiScreen::Clock;
 
   networkWorkerMutex = xSemaphoreCreateMutex();
   if (networkWorkerMutex) {

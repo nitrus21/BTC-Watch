@@ -163,6 +163,12 @@ flowchart TD
    [http://btc-watch.local](http://btc-watch.local).
 6. Ajoutez ou importez vos adresses Bitcoin publiques.
 
+Aux démarrages suivants, l'écran d'accueil s'affiche le temps que BTC Watch
+rejoigne le Wi-Fi enregistré. Dès que la connexion fonctionne, l'**horloge**
+s'ouvre automatiquement, sans toucher **DÉMARRER**. Le bouton en bas à droite
+du cadran mène à l'écran Total. Si aucun Wi-Fi n'est joignable, l'accueil
+reste affiché et **DÉMARRER** ouvre l'interface comme d'habitude.
+
 La configuration depuis un téléphone reste disponible : connectez-vous au
 réseau **BTC Watch** avec le mot de passe initial **bitcoin21**, puis ouvrez
 [http://192.168.22.1](http://192.168.22.1). Sur la liste tactile des réseaux,
